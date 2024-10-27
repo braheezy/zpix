@@ -1,0 +1,22 @@
+{
+	"name": "Zig Container",
+	"build": {
+		"dockerfile": "../Dockerfile",
+		"context": ".."
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ziglang.vscode-zig",
+				"emeraldwalk.RunOnSave",
+				"vmsynkov.colonize"
+			],
+			"settings": {
+				"terminal.integrated.defaultProfile.linux": "bash"
+			}
+		}
+	},
+	"postCreateCommand": "zig version",
+	// b/c rootless docker is being used
+	"remoteUser": "root"
+}
