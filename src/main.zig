@@ -1,19 +1,51 @@
 const std = @import("std");
+
+const jpeg = @import("jpeg.zig");
+const print = std.debug.print;
+
+const helpText = "Usage: zlox [-h/--help] <jpeg file>\n";
+
 pub fn main() !void {
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    // Memory allocation setup
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    defer if (gpa.deinit() == .leak) {
+        std.process.exit(1);
+    };
 
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    const stdout = std.io.getStdOut().writer();
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    // Read arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    try bw.flush();
-}
+    if (args.len == 1) {
+        // no args, exit
+        std.log.err("Missing input file\n", .{});
+        // EX_USAGE: command line usage error
+        std.process.exit(64);
+    }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit();
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    // handle CLI arguments
+    for (args[1..]) |arg| {
+        const isHelpFlag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+        if (isHelpFlag) {
+            try stdout.print(helpText, .{});
+            std.process.exit(0);
+        } else {
+            // assume input file
+            const file = std.fs.cwd().openFile(arg, .{}) catch |err| {
+                std.log.err("Failed to open jpeg file: {any}", .{err});
+                // EX_NOINPUT: cannot open input
+                std.process.exit(66);
+            };
+            defer file.close();
+
+            const jpegStream = file.reader();
+
+            jpeg.decodeFull(allocator, jpegStream) catch |err| {
+                std.log.err("Failed to decode jpeg file: {any}", .{err});
+            };
+        }
+    }
 }
