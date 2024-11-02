@@ -9,7 +9,8 @@
 			"extensions": [
 				"ziglang.vscode-zig",
 				"emeraldwalk.RunOnSave",
-				"vmsynkov.colonize"
+				"vmsynkov.colonize",
+				"aaron-bond.better-comments"
 			],
 			"settings": {
 				"terminal.integrated.defaultProfile.linux": "bash"

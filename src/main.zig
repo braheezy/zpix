@@ -34,16 +34,20 @@ pub fn main() !void {
             std.process.exit(0);
         } else {
             // assume input file
-            const file = std.fs.cwd().openFile(arg, .{}) catch |err| {
+            const jpeg_file = std.fs.cwd().openFile(arg, .{}) catch |err| {
                 std.log.err("Failed to open jpeg file: {any}", .{err});
                 // EX_NOINPUT: cannot open input
                 std.process.exit(66);
             };
-            defer file.close();
+            defer jpeg_file.close();
 
-            const jpegStream = file.reader();
+            jpeg.validateFile(jpeg_file) catch |err| {
+                std.log.err("Failed to validate jpeg file: {any}", .{err});
+                // EX_DATAERR: data format error
+                std.process.exit(65);
+            };
 
-            jpeg.decodeFull(allocator, jpegStream) catch |err| {
+            _ = jpeg.decodeFull(allocator, jpeg_file) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
             };
         }
