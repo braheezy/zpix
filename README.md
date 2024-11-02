@@ -1,7 +1,7 @@
 # zjpeg
 A JPEG decoder in pure Zig.
 
-> [!CAUTION
+> [!CAUTION]
 > This project is in active development and does not decode JPEGs yet.
 
 ## Development
