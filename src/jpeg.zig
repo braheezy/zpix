@@ -1,4 +1,6 @@
+//! jpeg package provides a full JPEG decoder
 const std = @import("std");
+
 const oneMB = 1.049E+6;
 const decodeLimit = oneMB;
 
@@ -25,7 +27,7 @@ pub const DecoderError = error{
     UnsupportedFeature,
 };
 
-// [Table B.1] Marker code assignments
+/// [Table B.1] Marker code assignments
 pub const Marker = enum(u16) {
     SOF0 = 0xFFC0,
     SOF1 = 0xFFC1,
@@ -109,37 +111,6 @@ pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImag
 
     return decoder.processMarkers();
 }
-
-// selectDecoder returns the appropriate decoder based on JPEG type
-// The first Start of Frame (SOF) marker is used.
-// fn selectDecoder(stream: std.fs.File.SeekableStream) !Decoder {
-//     while (true) {
-//         const position = try stream.getPos();
-//         const marker = try readMarker(stream);
-//         // [Table B.1]
-//         switch (marker) {
-//             // [B.2.1] Start of image: marks the start of a compressed image...
-//             .SOI => continue,
-//             // Baseline and Extended Sequential
-//             .SOF0, .SOF1 => {
-//                 try stream.seekTo(position);
-//                 return Decoder{
-//                     .decoder_api = &baseline.BaselineAPI,
-//                 };
-//             },
-//             // Progressive JPEG
-//             .SOF2 => {
-//                 // TODO: Support progressive jpeg decoding
-//                 try stream.seekTo(position);
-//                 return FileError.NotSupported;
-//             },
-//             // Skip any other marker until we reach an SOF marker or end of data
-//             else => {
-//                 try readLengthAndSkip(stream);
-//             },
-//         }
-//     }
-// }
 
 // validateFile returns an Error is the provided file reader does not reference a valid JPEG file.
 pub fn validateFile(file: std.fs.File) !void {

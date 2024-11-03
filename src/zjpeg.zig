@@ -1,6 +1,13 @@
+//! Checks that the basename of the given path matches a string.
+//!
+//! Usage:
+//!
+
 const std = @import("std");
 
-const jpeg = @import("src/jpeg.zig");
+pub const jpeg = @import("jpeg.zig");
+pub const Decoder = jpeg.Decoder;
+
 const print = std.debug.print;
 
 const helpText = "Usage: zlox [-h/--help] <jpeg file>\n";
