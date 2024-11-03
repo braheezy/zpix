@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const jpeg = @import("jpeg.zig");
+const jpeg = @import("src/jpeg.zig");
 const print = std.debug.print;
 
 const helpText = "Usage: zlox [-h/--help] <jpeg file>\n";
@@ -47,7 +47,7 @@ pub fn main() !void {
                 std.process.exit(65);
             };
 
-            _ = jpeg.decodeFull(allocator, jpeg_file) catch |err| {
+            _ = jpeg.decode(allocator, jpeg_file) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
             };
         }
