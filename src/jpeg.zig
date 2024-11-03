@@ -6,7 +6,7 @@ const decodeLimit = oneMB;
 
 const dbg = std.debug.print;
 
-fn println(comptime fmt: []const u8) void {
+fn dbgln(comptime fmt: []const u8) void {
     std.debug.print("{s}\n", .{fmt});
 }
 
@@ -21,13 +21,7 @@ pub const FileError = error{
     InvalidJPEGFormat,
 };
 
-pub const DecoderError = error{
-    InitializationFailed,
-    InvalidState,
-    UnsupportedFeature,
-};
-
-/// [Table B.1] Marker code assignments
+// [Table B.1] Marker code assignments
 pub const Marker = enum(u16) {
     SOF0 = 0xFFC0,
     SOF1 = 0xFFC1,
@@ -40,6 +34,26 @@ pub const Marker = enum(u16) {
 
 pub const Decoder = struct {
     stream: Stream,
+    allocator: std.mem.Allocator,
+
+    // frame header fields
+    precision: u16,
+    components: []Component,
+    num_lines: u16,
+    samples_per_line: u16,
+
+    const Component = struct {
+        // C: component identifier
+        // Used in scan headers to identify the components in the scan.
+        id: u8,
+        // H and V combined: horizontal and vertical sampling factor
+        // H will be in high nibble, V in low nibble.
+        // Specifies relationship between component dimension and max image dimension.
+        sampling_factors: u8,
+        // Tq: quantization table destination factor
+        // Specifies one of four of the quant tables to use when scans contain this component.
+        quant_table_id: u8,
+    };
 
     /// Processes JPEG markers in the stream and decodes the image data.
     /// Reads markers sequentially and handles them according to their type.
@@ -49,18 +63,41 @@ pub const Decoder = struct {
             dbg("marker: {x}\n", .{marker});
             switch (marker) {
                 .SOI => continue,
-                .SOF0 => try self.decodeHeader(),
+                // Baseline DCT
+                .SOF0 => {
+                    try self.decodeDctHeader();
+                },
+                .DQT => dbgln("handle dqt"),
                 else => try self.stream.readLengthAndSkip(),
             }
         }
     }
 
     /// Parses the stream to find the SOF marker and ensuing frame header info
-    fn decodeHeader(self: *Decoder) !void {
+    fn decodeDctHeader(self: *Decoder) !void {
         // [B.2.2] Frame header syntax
         // | SOFn | Lf | P | Y | X | Nf | Component-specification parameters |
-        const frame_header_length = try self.stream.readU16();
-        dbg("frame header length: {d}\n", .{frame_header_length});
+        const frame_length = try self.stream.readU16();
+        self.precision = try self.stream.readByte();
+        self.num_lines = try self.stream.readU16();
+        self.samples_per_line = try self.stream.readU16();
+        const num_components = try self.stream.readByte();
+
+        if ((num_components * 3) + 8 != frame_length) {
+            return FileError.InvalidJPEGFormat;
+        }
+
+        const components = try self.allocator.alloc(Component, num_components);
+        for (components) |*component| {
+            component.id = try self.stream.readByte();
+            component.sampling_factors = try self.stream.readByte();
+            component.quant_table_id = try self.stream.readByte();
+        }
+        self.components = components;
+    }
+
+    fn free(self: *Decoder) void {
+        self.allocator.free(self.components);
     }
 };
 
@@ -101,15 +138,22 @@ pub const Stream = struct {
 
 // decodeFull decodes the provided reader stream into a DecodedImage.
 pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImage {
-    _ = allocator;
     try validateFile(jpeg_file);
 
     const stream = Stream{ .inner = jpeg_file.seekableStream() };
     var decoder = Decoder{
+        .allocator = allocator,
         .stream = stream,
+        .precision = 0,
+        .components = undefined,
+        .num_lines = 0,
+        .samples_per_line = 0,
     };
+    defer decoder.free();
 
-    return decoder.processMarkers();
+    const result = decoder.processMarkers();
+
+    return result;
 }
 
 // validateFile returns an Error is the provided file reader does not reference a valid JPEG file.

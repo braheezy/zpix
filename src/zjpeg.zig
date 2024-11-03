@@ -48,12 +48,6 @@ pub fn main() !void {
             };
             defer jpeg_file.close();
 
-            jpeg.validateFile(jpeg_file) catch |err| {
-                std.log.err("Failed to validate jpeg file: {any}", .{err});
-                // EX_DATAERR: data format error
-                std.process.exit(65);
-            };
-
             _ = jpeg.decode(allocator, jpeg_file) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
             };
