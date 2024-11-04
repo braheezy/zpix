@@ -1,6 +1,7 @@
 //! jpeg package provides a full JPEG decoder
 const std = @import("std");
 const QuantTable = @import("QuantTable.zig");
+const HuffTable = @import("HuffTable.zig");
 
 const oneMB = 1.049E+6;
 const decodeLimit = oneMB;
@@ -31,6 +32,7 @@ pub const Marker = enum(u16) {
     SOF2 = 0xFFC2,
     DHT = 0xFFC4,
     SOI = 0xFFD8,
+    SOS = 0xFFDA,
     EOI = 0xFFD9,
     DQT = 0xFFDB,
     _,
@@ -46,8 +48,9 @@ pub const Decoder = struct {
     num_lines: u16,
     samples_per_line: u16,
 
-    // DCT support
+    // Tables
     quant_tables: [4]?QuantTable,
+    huff_tables: [4]?HuffTable,
 
     const Component = struct {
         // C: component identifier
@@ -67,7 +70,7 @@ pub const Decoder = struct {
     pub fn processMarkers(self: *Decoder) !DecodedImage {
         while (true) {
             const marker = try self.stream.readMarker();
-            dbg("marker: {x}\n", .{marker});
+            std.log.debug("marker: {x}", .{marker});
             switch (marker) {
                 // Start of image
                 .SOI => continue,
@@ -76,9 +79,11 @@ pub const Decoder = struct {
                     try self.decodeDctHeader();
                 },
                 // Define quantization table(s)
-                .DQT => try self.decodeDctTable(),
+                .DQT => try self.decodeDctTables(),
                 // Define Huffman table(s)
-                .DHT => dbgln("TODO"),
+                .DHT => try self.decodeDhtTables(),
+                // Start of scan
+                .SOS => dbgln("start of image scan"),
                 else => try self.stream.readLengthAndSkip(),
             }
         }
@@ -107,8 +112,32 @@ pub const Decoder = struct {
         self.components = components;
     }
 
-    fn decodeDctTable(self: *Decoder) !void {
+    fn decodeDctTables(self: *Decoder) !void {
         try QuantTable.init(&self.quant_tables, self.stream);
+    }
+
+    fn decodeDhtTables(self: *Decoder) !void {
+        try HuffTable.init(&self.huff_tables, self.stream);
+        // if (self.huff_tables[0]) |huff| {
+        //     dbg("peek huff 1: {any}\n", .{huff.values[0..3]});
+        // } else {
+        //     dbgln("huff 1 still null");
+        // }
+        // if (self.huff_tables[1]) |huff| {
+        //     dbg("peek huff 2: {any}\n", .{huff.values[0..3]});
+        // } else {
+        //     dbgln("huff 2 still null");
+        // }
+        // if (self.huff_tables[2]) |huff| {
+        //     dbg("peek huff 3: {any}\n", .{huff.values[0..3]});
+        // } else {
+        //     dbgln("huff 3 still null");
+        // }
+        // if (self.huff_tables[3]) |huff| {
+        //     dbg("peek huff 4: {any}\n", .{huff.values[0..3]});
+        // } else {
+        //     dbgln("huff 4 still null");
+        // }
     }
 
     fn free(self: *Decoder) void {
@@ -164,6 +193,7 @@ pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImag
         .num_lines = 0,
         .samples_per_line = 0,
         .quant_tables = .{null} ** 4,
+        .huff_tables = .{null} ** 4,
     };
     defer decoder.free();
 
