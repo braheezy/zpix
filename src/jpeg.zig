@@ -44,7 +44,7 @@ pub const Decoder = struct {
 
     // frame header fields
     precision: u16,
-    components: []Component,
+    dct_components: []DctComponent,
     num_lines: u16,
     samples_per_line: u16,
 
@@ -52,7 +52,33 @@ pub const Decoder = struct {
     quant_tables: [4]?QuantTable,
     huff_tables: [4]?HuffTable,
 
-    const Component = struct {
+    // Scan header
+    // Present at the start of a scan. This header specifies which component(s) are contained in the scan, specifies
+    // the destinations from which the entropy tables to be used with each component are retrieved, and (for the
+    // progressive DCT) which part of the DCT quantized coefficient data is contained in the scan. For lossless
+    // processes the scan parameters specify the predictor and the point transform
+    scan_components: []ScanComponent,
+    // Start of spectral or predictor selection
+    // In the DCT modes of operation, this parameter specifies the first DCT coefficient in each block in zig-zag order
+    // which shall be coded in the scan. This parameter shall be set to zero for the sequential DCT processes. In the
+    // lossless mode of operations this parameter is used to select the predictor.
+    start_selection: u8,
+    // End of spectral selection – Specifies the last DCT coefficient in each block in zig-zag order which shall be
+    // coded in the scan. This parameter shall be set to 63 for the sequential DCT processes. In the lossless mode of
+    // operations this parameter has no meaning. It shall be set to zero.
+    end_selection: u8,
+    // Successive approximation bit position high – This parameter specifies the point transform used in the
+    // preceding scan (i.e. successive approximation bit position low in the preceding scan) for the band of
+    // coefficients specified by Ss and Se. This parameter shall be set to zero for the first scan of each band of
+    // coefficients. In the lossless mode of operations this parameter has no meaning. It shall be set to zero.
+    successive_approx_high_bit: u8,
+    // Successive approximation bit position low or point transform – In the DCT modes of operation this
+    // parameter specifies the point transform, i.e. bit position low, used before coding the band of coefficients
+    // specified by Ss and Se. This parameter shall be set to zero for the sequential DCT processes. In the lossless
+    // mode of operations, this parameter specifies the point transform.
+    successive_approx_low_bit: u8,
+
+    const DctComponent = struct {
         // C: component identifier
         // Used in scan headers to identify the components in the scan.
         id: u8,
@@ -65,12 +91,24 @@ pub const Decoder = struct {
         quant_table_id: u8,
     };
 
+    const ScanComponent = struct {
+        // Scan component selector
+        // selects which of the Nf image components specified in the frame parameters
+        selector: u8,
+        // DC entropy coding table destination selector. The DC table must already be installed to the decoder.
+        dc_table_selector: u8,
+        // AC entropy coding table destination selector. The AC table must already be installed to the decoder.
+        // 0 for lossless.
+        ac_table_selector: u8,
+    };
+
     /// Processes JPEG markers in the stream and decodes the image data.
     /// Reads markers sequentially and handles them according to their type.
     pub fn processMarkers(self: *Decoder) !DecodedImage {
         while (true) {
             const marker = try self.stream.readMarker();
             std.log.debug("marker: {x}", .{marker});
+
             switch (marker) {
                 // Start of image
                 .SOI => continue,
@@ -83,9 +121,40 @@ pub const Decoder = struct {
                 // Define Huffman table(s)
                 .DHT => try self.decodeDhtTables(),
                 // Start of scan
-                .SOS => dbgln("start of image scan"),
+                .SOS => {
+                    try self.decodeScanHeader();
+                    try self.decodeSegment();
+                },
+                // End of image
+                .EOI => {
+                    dbgln("done!");
+                    return DecodedImage{ .width = 1, .height = 1 };
+                },
                 else => try self.stream.readLengthAndSkip(),
             }
+        }
+    }
+
+    fn decodeSegment(self: *Decoder) !void {
+        // TODO: improve performance by reading more than 1 byte at a time
+        var data_size: u32 = 0;
+        while (self.stream.readByte()) |byte| {
+            switch (byte) {
+                0xFF => {
+                    const next_byte = try self.stream.readByte();
+                    if (next_byte != 0) {
+                        // Restore stream position for just consumed marker and let processMarkers deal with it
+                        try self.stream.inner.seekBy(-2);
+                        dbg("need to parse {d} bytes of entropy data\n", .{data_size});
+                        return;
+                    }
+                },
+                else => {
+                    data_size += 1;
+                },
+            }
+        } else |err| {
+            return err;
         }
     }
 
@@ -103,13 +172,13 @@ pub const Decoder = struct {
             return FileError.InvalidJPEGFormat;
         }
 
-        const components = try self.allocator.alloc(Component, num_components);
+        const components = try self.allocator.alloc(DctComponent, num_components);
         for (components) |*component| {
             component.id = try self.stream.readByte();
             component.sampling_factors = try self.stream.readByte();
             component.quant_table_id = try self.stream.readByte();
         }
-        self.components = components;
+        self.dct_components = components;
     }
 
     fn decodeDctTables(self: *Decoder) !void {
@@ -140,8 +209,53 @@ pub const Decoder = struct {
         // }
     }
 
+    fn decodeScanHeader(self: *Decoder) !void {
+        // [B.2.3] Scan header syntax
+        // | SOS | Ls | Ns | component-spec | Ss | Se | Ah | Af |
+
+        _ = try self.stream.readU16();
+        const num_components = try self.stream.readByte();
+
+        self.scan_components = try self.allocator.alloc(ScanComponent, num_components);
+
+        for (0..num_components) |i| {
+            const component_selector = try self.stream.readByte();
+            const dc_and_ac_table_selector = try self.stream.readByte();
+
+            const dc_table_selector = (dc_and_ac_table_selector & 0b1111_0000) >> 4;
+            const ac_table_selector = dc_and_ac_table_selector & 0b0000_1111;
+
+            self.scan_components[i] = ScanComponent{
+                .selector = component_selector,
+                .dc_table_selector = dc_table_selector,
+                .ac_table_selector = ac_table_selector,
+            };
+
+            // dbg("Component {d}: id={d}, dc_table={d}, ac_table={d}\n", .{
+            //     i,
+            //     component_selector,
+            //     dc_table_selector,
+            //     ac_table_selector,
+            // });
+        }
+
+        self.start_selection = try self.stream.readByte();
+        self.end_selection = try self.stream.readByte();
+        const successive_approx = try self.stream.readByte();
+        self.successive_approx_high_bit = (successive_approx & 0b1111_0000) >> 4;
+        self.successive_approx_low_bit = successive_approx & 0b0000_1111;
+
+        // dbg("Ss: {d}, Se: {d}, Ah: {d}, Al: {d}\n", .{
+        //     self.start_selection,
+        //     self.end_selection,
+        //     self.successive_approx_high_bit,
+        //     self.successive_approx_low_bit,
+        // });
+    }
+
     fn free(self: *Decoder) void {
-        self.allocator.free(self.components);
+        self.allocator.free(self.dct_components);
+        self.allocator.free(self.scan_components);
     }
 };
 
@@ -189,11 +303,16 @@ pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImag
         .allocator = allocator,
         .stream = &stream,
         .precision = 0,
-        .components = undefined,
+        .dct_components = undefined,
         .num_lines = 0,
         .samples_per_line = 0,
         .quant_tables = .{null} ** 4,
         .huff_tables = .{null} ** 4,
+        .scan_components = undefined,
+        .start_selection = 0,
+        .end_selection = 0,
+        .successive_approx_high_bit = 0,
+        .successive_approx_low_bit = 0,
     };
     defer decoder.free();
 
