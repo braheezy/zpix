@@ -1,5 +1,6 @@
 //! jpeg package provides a full JPEG decoder
 const std = @import("std");
+const QuantTable = @import("QuantTable.zig");
 
 const oneMB = 1.049E+6;
 const decodeLimit = oneMB;
@@ -17,6 +18,8 @@ pub const FileError = error{
     InvalidEOIMarker,
     /// Unexpected end of data in stream
     UnexpectedEndOfData,
+    /// Expected marker but failed to read it
+    InvalidMarker,
     /// General format issue
     InvalidJPEGFormat,
 };
@@ -26,6 +29,7 @@ pub const Marker = enum(u16) {
     SOF0 = 0xFFC0,
     SOF1 = 0xFFC1,
     SOF2 = 0xFFC2,
+    DHT = 0xFFC4,
     SOI = 0xFFD8,
     EOI = 0xFFD9,
     DQT = 0xFFDB,
@@ -33,7 +37,7 @@ pub const Marker = enum(u16) {
 };
 
 pub const Decoder = struct {
-    stream: Stream,
+    stream: *Stream,
     allocator: std.mem.Allocator,
 
     // frame header fields
@@ -41,6 +45,9 @@ pub const Decoder = struct {
     components: []Component,
     num_lines: u16,
     samples_per_line: u16,
+
+    // DCT support
+    quant_tables: [4]?QuantTable,
 
     const Component = struct {
         // C: component identifier
@@ -62,12 +69,16 @@ pub const Decoder = struct {
             const marker = try self.stream.readMarker();
             dbg("marker: {x}\n", .{marker});
             switch (marker) {
+                // Start of image
                 .SOI => continue,
                 // Baseline DCT
                 .SOF0 => {
                     try self.decodeDctHeader();
                 },
-                .DQT => dbgln("handle dqt"),
+                // Define quantization table(s)
+                .DQT => try self.decodeDctTable(),
+                // Define Huffman table(s)
+                .DHT => dbgln("TODO"),
                 else => try self.stream.readLengthAndSkip(),
             }
         }
@@ -96,6 +107,10 @@ pub const Decoder = struct {
         self.components = components;
     }
 
+    fn decodeDctTable(self: *Decoder) !void {
+        try QuantTable.init(&self.quant_tables, self.stream);
+    }
+
     fn free(self: *Decoder) void {
         self.allocator.free(self.components);
     }
@@ -122,7 +137,7 @@ pub const Stream = struct {
         const byte2 = try self.readByte();
         // [B.1.1.3] all markers start with FF
         if (byte1 != 0xFF) {
-            return FileError.InvalidJPEGFormat;
+            return FileError.InvalidMarker;
         }
         return @enumFromInt(@as(u16, byte1) << 8 | @as(u16, byte2));
     }
@@ -140,14 +155,15 @@ pub const Stream = struct {
 pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImage {
     try validateFile(jpeg_file);
 
-    const stream = Stream{ .inner = jpeg_file.seekableStream() };
+    var stream = Stream{ .inner = jpeg_file.seekableStream() };
     var decoder = Decoder{
         .allocator = allocator,
-        .stream = stream,
+        .stream = &stream,
         .precision = 0,
         .components = undefined,
         .num_lines = 0,
         .samples_per_line = 0,
+        .quant_tables = .{null} ** 4,
     };
     defer decoder.free();
 
