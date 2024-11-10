@@ -21,6 +21,9 @@ pub const FileError = error{
     UnexpectedEndOfData,
     /// Expected marker but failed to read it
     InvalidMarker,
+    InvalidHuffmanCode,
+    NotEnoughBits,
+    BlockOverflow,
     /// General format issue
     InvalidJPEGFormat,
 };
@@ -38,6 +41,17 @@ pub const Marker = enum(u16) {
     _,
 };
 
+const MCU = struct {
+    // Array of coefficient blocks for each component
+    // Each block is 8x8, represented as 64 coefficients
+    // For the Y component (luminance)
+    y_blocks: [][]i16,
+    // For the Cb component (chrominance)
+    cb_blocks: [][]i16,
+    // For the Cr component (chrominance)
+    cr_blocks: [][]i16,
+};
+
 pub const Decoder = struct {
     stream: *Stream,
     allocator: std.mem.Allocator,
@@ -47,6 +61,9 @@ pub const Decoder = struct {
     dct_components: []DctComponent,
     num_lines: u16,
     samples_per_line: u16,
+
+    mcus: []MCU,
+    decodeMcu: *const fn (*Decoder, *u32, *u8) FileError!void,
 
     // Tables
     quant_tables: [4]?QuantTable,
@@ -100,6 +117,14 @@ pub const Decoder = struct {
         // AC entropy coding table destination selector. The AC table must already be installed to the decoder.
         // 0 for lossless.
         ac_table_selector: u8,
+
+        // Component state variables
+        // Previous DC coefficient for differential coding
+        prev_dc: i16 = 0,
+        // Current position in the block (0..63)
+        block_pos: u8 = 0,
+        // DCT coefficients for the current block
+        coefficients: [64]i16 = undefined,
     };
 
     /// Processes JPEG markers in the stream and decodes the image data.
@@ -115,6 +140,7 @@ pub const Decoder = struct {
                 // Baseline DCT
                 .SOF0 => {
                     try self.decodeDctHeader();
+                    self.decodeMcu = Decoder.decodeMcuBaselineDct;
                 },
                 // Define quantization table(s)
                 .DQT => try self.decodeDctTables(),
@@ -138,6 +164,11 @@ pub const Decoder = struct {
     fn decodeSegment(self: *Decoder) !void {
         // TODO: improve performance by reading more than 1 byte at a time
         var data_size: u32 = 0;
+        // Buffer to store bits read from the stream
+        var bit_buffer: u32 = 0;
+        // Number of valid bits in the bit_buffer
+        var bit_count: u8 = 0;
+
         while (self.stream.readByte()) |byte| {
             switch (byte) {
                 0xFF => {
@@ -150,11 +181,193 @@ pub const Decoder = struct {
                     }
                 },
                 else => {
+                    bit_buffer = (bit_buffer << 8) | byte;
+                    bit_count += 8;
+                    try self.callDecodeMcu(&bit_buffer, &bit_count);
                     data_size += 1;
                 },
             }
         } else |err| {
             return err;
+        }
+    }
+
+    fn callDecodeMcu(self: *Decoder, bit_buffer: *u32, bit_count: *u8) FileError!void {
+        // as an amatuer zig programmer, why does self need to pass self to the function?
+        return self.decodeMcu(self, bit_buffer, bit_count);
+    }
+
+    fn decodeMcuBaselineDct(self: *Decoder, bit_buffer: *u32, bit_count: *u8) FileError!void {
+        // This function processes the ECS data for a single MCU in a baseline sequential JPEG
+        for (self.scan_components) |*component| {
+            // Reset component state
+            component.block_pos = 0;
+            component.coefficients = [_]i16{0} ** 64;
+
+            // Process DC coefficient
+            const dc_huff_table = self.huff_tables[component.dc_table_selector] orelse {
+                return FileError.InvalidHuffmanCode;
+            };
+
+            const dc_symbol = try self.decodeHuffmanSymbol(dc_huff_table, bit_buffer, bit_count);
+
+            try placeSymbol(dc_symbol, component, bit_buffer, bit_count);
+
+            // Process AC coefficients
+            const ac_huff_table = self.huff_tables[component.ac_table_selector] orelse {
+                return FileError.InvalidHuffmanCode;
+            };
+
+            while (component.block_pos < 64) {
+                const ac_symbol = try self.decodeHuffmanSymbol(ac_huff_table, bit_buffer, bit_count);
+                try placeSymbol(ac_symbol, component, bit_buffer, bit_count);
+
+                // Break if EOB symbol was processed
+                if (ac_symbol == 0x00) {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn decodeHuffmanSymbol(
+        self: *Decoder,
+        table: HuffTable,
+        bit_buffer: *u32,
+        bit_count: *u8,
+    ) FileError!u8 {
+        // Implement the Huffman decoding logic
+        // This function should read bits from the bit buffer and match them against the Huffman codes
+        // Return the decoded symbol or an error if the code is invalid
+        _ = self;
+        _ = table;
+        _ = bit_buffer;
+        _ = bit_count;
+        dbgln("implement decodeHuffmanSymbol or get this error");
+        return FileError.UnexpectedEndOfData;
+    }
+
+    fn readBits(bit_buffer: *u32, bit_count: *u8, num_bits: u8) ?u32 {
+        dbg("reading {d} bits from {d}\n", .{ num_bits, bit_buffer });
+        if (bit_count.* < num_bits) {
+            // Not enough bits to read
+            return null;
+        }
+        const shift_amount: u5 = @intCast(bit_count.* - num_bits);
+        const mask = (@as(u32, 1) << @intCast(num_bits)) - 1;
+        const bits = (bit_buffer.* >> shift_amount) & mask;
+        bit_count.* -= num_bits;
+        return bits;
+    }
+
+    fn extendSign(value: u32, num_bits: u8) i16 {
+        if (num_bits == 0) return 0;
+
+        // Cast num_bits - 1 to u5 for the shift amount
+        const shift_amount_minus1: u5 = @intCast(num_bits - 1);
+        // Cast 1 to u32 to make LHS a fixed-width integer
+        const sign_bit: u32 = @as(u32, 1) << shift_amount_minus1;
+
+        // Perform the initial cast ofa'value' to i32
+        var extended_value: i32 = @intCast(value);
+
+        if ((value & sign_bit) != 0) {
+            // Negative number, perform sign extension
+            const shift_amount: u5 = @intCast(num_bits);
+            const value_to_subtract: i32 = @as(i32, @as(i32, 1) << shift_amount);
+            extended_value = extended_value - value_to_subtract;
+        }
+
+        // Cast the result to i16
+        return @intCast(extended_value);
+    }
+
+    fn placeSymbol(
+        symbol: u8,
+        component: *ScanComponent,
+        bit_buffer: *u32,
+        bit_count: *u8,
+    ) !void {
+        // If we are at the beginning of the block
+        if (component.block_pos == 0) {
+            // This is the DC coefficient
+            const num_bits = symbol;
+
+            var dc_diff: i16 = 0;
+            if (num_bits > 0) {
+                // Read num_bits from bit buffer
+                const bits = readBits(bit_buffer, bit_count, num_bits) orelse {
+                    return FileError.UnexpectedEndOfData;
+                };
+                // Sign extend
+                dc_diff = extendSign(bits, num_bits);
+            }
+
+            // Add to previous DC value
+            const dc_coefficient = component.prev_dc + dc_diff;
+
+            // Update previous DC value
+            component.prev_dc = dc_coefficient;
+
+            // Store the DC coefficient in the block
+            component.coefficients[0] = dc_coefficient;
+
+            // Update block position
+            component.block_pos += 1;
+        } else {
+            // This is an AC coefficient
+            var block_pos = component.block_pos;
+
+            if (symbol == 0x00) {
+                // EOB: Fill the rest of the block with zeros
+                while (block_pos < 64) : (block_pos += 1) {
+                    component.coefficients[block_pos] = 0;
+                }
+                component.block_pos = block_pos;
+            } else if (symbol == 0xF0) {
+                // ZRL: Skip 16 zeros
+                for (0..16) |_| {
+                    if (block_pos >= 64) {
+                        return FileError.BlockOverflow;
+                    }
+                    component.coefficients[block_pos] = 0;
+                    block_pos += 1;
+                }
+                component.block_pos = block_pos;
+            } else {
+                // The upper 4 bits represent the run-length of zeros
+                const run_length = symbol >> 4;
+                // The lower 4 bits represent the size in bits of the coefficient
+                const size = symbol & 0x0F;
+
+                // Skip zeros
+                for (0..run_length) |_| {
+                    if (block_pos >= 64) {
+                        return FileError.BlockOverflow;
+                    }
+                    component.coefficients[block_pos] = 0;
+                    block_pos += 1;
+                }
+
+                // Read the coefficient value
+                var ac_value: i16 = 0;
+                if (size > 0) {
+                    const bits = readBits(bit_buffer, bit_count, size) orelse {
+                        return FileError.NotEnoughBits;
+                    };
+                    // Sign extend
+                    ac_value = extendSign(bits, size);
+                }
+
+                if (block_pos >= 64) {
+                    return FileError.BlockOverflow;
+                }
+
+                // Store the coefficient
+                component.coefficients[block_pos] = ac_value;
+                block_pos += 1;
+                component.block_pos = block_pos;
+            }
         }
     }
 
@@ -313,6 +526,8 @@ pub fn decode(allocator: std.mem.Allocator, jpeg_file: std.fs.File) !DecodedImag
         .end_selection = 0,
         .successive_approx_high_bit = 0,
         .successive_approx_low_bit = 0,
+        .decodeMcu = undefined,
+        .mcus = undefined,
     };
     defer decoder.free();
 
