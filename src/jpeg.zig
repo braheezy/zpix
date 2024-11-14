@@ -28,6 +28,8 @@ pub const FileError = error{
     InvalidJPEGFormat,
 };
 
+const Error = FileError || std.io.AnyReader.Error;
+
 // [Table B.1] Marker code assignments
 pub const Marker = enum(u16) {
     SOF0 = 0xFFC0,
@@ -63,7 +65,7 @@ pub const Decoder = struct {
     samples_per_line: u16,
 
     mcus: []MCU,
-    decodeMcu: *const fn (*Decoder, *u32, *u8) FileError!void,
+    decodeMcu: *const fn (*Decoder, *u32, *u8) Error!void,
 
     // Tables
     quant_tables: [4]?QuantTable,
@@ -166,7 +168,7 @@ pub const Decoder = struct {
         var data_size: u32 = 0;
         // Buffer to store bits read from the stream
         var bit_buffer: u32 = 0;
-        // Number of valid bits in the bit_buffer
+        // // Number of valid bits in the bit_buffer
         var bit_count: u8 = 0;
 
         while (self.stream.readByte()) |byte| {
@@ -188,16 +190,17 @@ pub const Decoder = struct {
                 },
             }
         } else |err| {
+            dbg("Read {d} bytes of entropy data\n", .{data_size});
             return err;
         }
     }
 
-    fn callDecodeMcu(self: *Decoder, bit_buffer: *u32, bit_count: *u8) FileError!void {
+    fn callDecodeMcu(self: *Decoder, bit_buffer: *u32, bit_count: *u8) Error!void {
         // as an amatuer zig programmer, why does self need to pass self to the function?
         return self.decodeMcu(self, bit_buffer, bit_count);
     }
 
-    fn decodeMcuBaselineDct(self: *Decoder, bit_buffer: *u32, bit_count: *u8) FileError!void {
+    fn decodeMcuBaselineDct(self: *Decoder, bit_buffer: *u32, bit_count: *u8) Error!void {
         // This function processes the ECS data for a single MCU in a baseline sequential JPEG
         for (self.scan_components) |*component| {
             // Reset component state
@@ -211,7 +214,7 @@ pub const Decoder = struct {
 
             const dc_symbol = try self.decodeHuffmanSymbol(dc_huff_table, bit_buffer, bit_count);
 
-            try placeSymbol(dc_symbol, component, bit_buffer, bit_count);
+            try self.placeSymbol(dc_symbol, component, bit_buffer, bit_count);
 
             // Process AC coefficients
             const ac_huff_table = self.huff_tables[component.ac_table_selector] orelse {
@@ -220,7 +223,7 @@ pub const Decoder = struct {
 
             while (component.block_pos < 64) {
                 const ac_symbol = try self.decodeHuffmanSymbol(ac_huff_table, bit_buffer, bit_count);
-                try placeSymbol(ac_symbol, component, bit_buffer, bit_count);
+                try self.placeSymbol(ac_symbol, component, bit_buffer, bit_count);
 
                 // Break if EOB symbol was processed
                 if (ac_symbol == 0x00) {
@@ -235,23 +238,47 @@ pub const Decoder = struct {
         table: HuffTable,
         bit_buffer: *u32,
         bit_count: *u8,
-    ) FileError!u8 {
-        // Implement the Huffman decoding logic
-        // This function should read bits from the bit buffer and match them against the Huffman codes
-        // Return the decoded symbol or an error if the code is invalid
-        _ = self;
-        _ = table;
-        _ = bit_buffer;
-        _ = bit_count;
-        dbgln("implement decodeHuffmanSymbol or get this error");
-        return FileError.UnexpectedEndOfData;
+    ) Error!u8 {
+        var code: u32 = 0;
+        var length: u8 = 0;
+
+        while (length < 16) {
+            if (bit_count.* == 0) {
+                const byte = try self.stream.readByte();
+                bit_buffer.* = (bit_buffer.* << 8) | byte;
+                bit_count.* += 8;
+            }
+
+            code = (code << 1) | ((bit_buffer.* >> @intCast(bit_count.* - 1)) & 1);
+            bit_count.* -= 1;
+            length += 1;
+
+            if (code < (@as(u32, 1) << @intCast(length))) {
+                var offset: usize = 0;
+                for (0..length) |i| {
+                    offset += table.code_lengths[i];
+                }
+                var base_code: u32 = 0;
+                for (0..length) |i| {
+                    base_code = (base_code << 1) + table.code_lengths[i];
+                }
+                if (code == 0) {
+                    return table.values[offset];
+                } else {
+                    return table.values[offset + (code - base_code)];
+                }
+            }
+        }
+
+        return FileError.InvalidHuffmanCode;
     }
 
-    fn readBits(bit_buffer: *u32, bit_count: *u8, num_bits: u8) ?u32 {
-        dbg("reading {d} bits from {d}\n", .{ num_bits, bit_buffer });
-        if (bit_count.* < num_bits) {
-            // Not enough bits to read
-            return null;
+    fn readBits(self: *Decoder, bit_buffer: *u32, bit_count: *u8, num_bits: u8) Error!u32 {
+        // dbg("reading {d} bits from {d}\n", .{ num_bits, bit_buffer });
+        while (bit_count.* < num_bits) {
+            const byte = try self.stream.readByte();
+            bit_buffer.* = (bit_buffer.* << 8) | byte;
+            bit_count.* += 8;
         }
         const shift_amount: u5 = @intCast(bit_count.* - num_bits);
         const mask = (@as(u32, 1) << @intCast(num_bits)) - 1;
@@ -283,6 +310,7 @@ pub const Decoder = struct {
     }
 
     fn placeSymbol(
+        self: *Decoder,
         symbol: u8,
         component: *ScanComponent,
         bit_buffer: *u32,
@@ -295,10 +323,7 @@ pub const Decoder = struct {
 
             var dc_diff: i16 = 0;
             if (num_bits > 0) {
-                // Read num_bits from bit buffer
-                const bits = readBits(bit_buffer, bit_count, num_bits) orelse {
-                    return FileError.UnexpectedEndOfData;
-                };
+                const bits = try self.readBits(bit_buffer, bit_count, num_bits);
                 // Sign extend
                 dc_diff = extendSign(bits, num_bits);
             }
@@ -352,21 +377,20 @@ pub const Decoder = struct {
                 // Read the coefficient value
                 var ac_value: i16 = 0;
                 if (size > 0) {
-                    const bits = readBits(bit_buffer, bit_count, size) orelse {
-                        return FileError.NotEnoughBits;
+                    _ = self.readBits(bit_buffer, bit_count, size) catch {
+                        const bits = try self.readBits(bit_buffer, bit_count, size);
+                        ac_value = extendSign(bits, size);
                     };
-                    // Sign extend
-                    ac_value = extendSign(bits, size);
-                }
 
-                if (block_pos >= 64) {
-                    return FileError.BlockOverflow;
-                }
+                    if (block_pos >= 64) {
+                        return FileError.BlockOverflow;
+                    }
 
-                // Store the coefficient
-                component.coefficients[block_pos] = ac_value;
-                block_pos += 1;
-                component.block_pos = block_pos;
+                    // Store the coefficient
+                    component.coefficients[block_pos] = ac_value;
+                    block_pos += 1;
+                    component.block_pos = block_pos;
+                }
             }
         }
     }
