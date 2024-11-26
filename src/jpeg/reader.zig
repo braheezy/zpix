@@ -14,7 +14,7 @@ const maxTc = 1;
 const maxTh = 3;
 const maxTq = 3;
 
-pub const FileError = error{
+pub const FormatError = error{
     /// SOI marker missing or incorrect
     InvalidSOIMarker,
     /// EOI marker missing or incorrect
@@ -28,20 +28,45 @@ pub const FileError = error{
     BlockOverflow,
     EndOfEntropyData,
     UnexpectedEof,
+    UnsupportedMarker,
+    UnknownMarker,
+    ShortSegmentLength,
     /// General format issue
     InvalidJPEGFormat,
 };
 
 // [Table B.1] Marker code assignments
 pub const Marker = enum(u16) {
+    // Start Of Frame (Baseline Sequential).
     SOF0 = 0xC0,
+    // Start Of Frame (Extended Sequential).
     SOF1 = 0xC1,
+    // Start Of Frame (Progressive).
     SOF2 = 0xC2,
+    // Define Huffman Table.
     DHT = 0xC4,
+    // ReSTart (0).
+    RST0 = 0xD0,
+    // ReSTart (7).
+    RST7 = 0xD7,
+    // Start Of Image.
     SOI = 0xD8,
-    SOS = 0xDA,
+    // End Of Image.
     EOI = 0xD9,
+    // Start Of Scan.
+    SOS = 0xDA,
+    // Define Quantization Table.
     DQT = 0xDB,
+    // Define Restart Interval.
+    DRI = 0xDD,
+    // COMment
+    COM = 0xFE,
+    // "APPlication specific" markers aren't part of the JPEG spec per se,
+    // but in practice, their use is described at
+    // https://www.sno.phy.queensu.ca/~phil/exiftool/TagNames/JPEG.html
+    APP0 = 0xE0,
+    APP14 = 0xEE,
+    APP15 = 0xEF,
     _,
 };
 
@@ -136,18 +161,133 @@ fn _decode(self: *Decoder, config_only: bool) !void {
     // Check for the Start of Image marker.
     if (self.tmp[0] != 0xFF or self.tmp[1] != @intFromEnum(Marker.SOI)) {
         std.debug.print("{x} {x}\n", .{ self.tmp[0], self.tmp[1] });
-        return FileError.InvalidSOIMarker;
+        return FormatError.InvalidSOIMarker;
+    } else {
+        dbgln("SOI successfully read");
     }
 
     while (true) {
         try self.readFull(self.tmp[0..2]);
+        while (self.tmp[0] != 0xff) {
+            // Strictly speaking, this is a format error. However, libjpeg is
+            // liberal in what it accepts. As of version 9, next_marker in
+            // jdmarker.c treats this as a warning (JWRN_EXTRANEOUS_DATA) and
+            // continues to decode the stream. Even before next_marker sees
+            // extraneous data, jpeg_fill_bit_buffer in jdhuff.c reads as many
+            // bytes as it can, possibly past the end of a scan's data. It
+            // effectively puts back any markers that it overscanned (e.g. an
+            // "\xff\xd9" EOI marker), but it does not put back non-marker data,
+            // and thus it can silently ignore a small number of extraneous
+            // non-marker bytes before next_marker has a chance to see them (and
+            // print a warning).
+            //
+            // We are therefore also liberal in what we accept. Extraneous data
+            // is silently ignored.
+            //
+            // This is similar to, but not exactly the same as, the restart
+            // mechanism within a scan (the RST[0-7] markers).
+            //
+            // Note that extraneous 0xff bytes in e.g. SOS data are escaped as
+            // "\xff\x00", and so are detected a little further down below.
+            self.tmp[0] = self.tmp[1];
+            self.tmp[1] = try self.readByte();
+        }
+
+        var marker = self.tmp[1];
+
+        if (marker == 0) {
+            // Treat "\xff\x00" as extraneous data.
+            continue;
+        }
+        while (marker == 0xff) {
+            // Section B.1.1.2 says, "Any marker may optionally be preceded by any
+            // number of fill bytes, which are bytes assigned code X'FF'".
+            marker = try self.readByte();
+        }
+        if (marker == @intFromEnum(Marker.EOI)) {
+            // Done!
+            break;
+        }
+        if (@intFromEnum(Marker.RST0) <= marker and marker <= @intFromEnum(Marker.RST7)) {
+            // Figures B.2 and B.16 of the specification suggest that restart markers should
+            // only occur between Entropy Coded Segments and not after the final ECS.
+            // However, some encoders may generate incorrect JPEGs with a final restart
+            // marker. That restart marker will be seen here instead of inside the processSOS
+            // method, and is ignored as a harmless error. Restart markers have no extra data,
+            // so we check for this before we read the 16-bit length of the segment.
+            continue;
+        }
+
+        // Read the 16-bit length of the segment. The value includes the 2 bytes for the
+        // length itself, so we subtract 2 to get the number of remaining bytes.
+        try self.readFull(self.tmp[0..2]);
+        var n = @as(i32, self.tmp[0]) << 8;
+        n = n + @as(i32, self.tmp[1]) - 2;
+        if (n < 0) {
+            return FormatError.ShortSegmentLength;
+        }
+
+        const marker_enum: Marker = @enumFromInt(marker);
+        switch (marker_enum) {
+            Marker.SOF0 => {
+                dbgln("found sof0");
+            },
+            else => {
+                if (@intFromEnum(Marker.APP0) <= marker and marker <= @intFromEnum(Marker.APP15) or marker == @intFromEnum(Marker.COM)) {
+                    try self.ignore(n);
+                } else if (marker < 0xc0) {
+                    // See Table B.1 "Marker code assignments".
+                    return FormatError.UnknownMarker;
+                } else {
+                    dbg("unsupported marked: {x}\n", .{marker});
+                    return FormatError.UnsupportedMarker;
+                }
+            },
+        }
     }
+}
+
+// ignore ignores the next n bytes.
+fn ignore(self: *Decoder, n: i32) !void {
+    var local_n = n;
+    // Unread the overshot bytes, if any.
+    if (self.bytes.num_unreadable > 0) {
+        if (self.bits.n >= 8) {
+            self.unreadByteStuffedByte();
+        }
+        self.bytes.num_unreadable = 0;
+    }
+
+    while (true) {
+        var m = self.bytes.j - self.bytes.i;
+        if (m > local_n) {
+            m = @intCast(local_n);
+        }
+        self.bytes.i += m;
+        local_n -= @intCast(m);
+        if (local_n == 0) {
+            break;
+        }
+        try self.fill();
+    }
+}
+
+// readByte returns the next byte, whether buffered or not buffered. It does
+// not care about byte stuffing.
+fn readByte(self: *Decoder) !u8 {
+    while (self.bytes.i == self.bytes.j) {
+        try self.fill();
+    }
+    const x = self.bytes.buffer[self.bytes.i];
+    self.bytes.i += 1;
+    self.bytes.num_unreadable = 0;
+    return x;
 }
 
 // readFull reads exactly len(p) bytes into p. It does not care about byte
 // stuffing.
 fn readFull(self: *Decoder, p: []u8) !void {
-    var local_p = p; // Create a mutable local copy of p
+    var offset: usize = 0;
 
     // Unread the overshot bytes, if any.
     if (self.bytes.num_unreadable > 0) {
@@ -157,53 +297,52 @@ fn readFull(self: *Decoder, p: []u8) !void {
         self.bytes.num_unreadable = 0;
     }
 
-    while (local_p.len > 0) {
-        if (self.bytes.i == self.bytes.j) {
-            // Buffer is empty; fill it with more data.
-            try self.fill();
-        }
-
+    while (offset < p.len) {
+        // Calculate how much can be copied from the internal buffer.
         const available = self.bytes.j - self.bytes.i;
-        const n = @min(local_p.len, available);
+        const to_copy = @min(available, p.len - offset);
 
-        // Zig idiom: Copy data manually when sizes are small or mismatched.
-        for (0..n) |i| {
-            local_p[i] = self.bytes.buffer[self.bytes.i + i];
+        // Copy data from the internal buffer to the output buffer.
+        @memcpy(p[offset .. offset + to_copy], self.bytes.buffer[self.bytes.i .. self.bytes.i + to_copy]);
+        self.bytes.i += to_copy;
+        offset += to_copy;
+
+        // If the output buffer is fully written, we're done.
+        if (offset == p.len) {
+            break;
         }
 
-        // Update indices and slice pointers.
-        self.bytes.i += n;
-        local_p = local_p[n..]; // Advance local_p to point to the remaining space.
+        // Refill the internal buffer if it's exhausted.
+        try self.fill();
     }
 }
 
 // fill fills up the d.bytes.buf buffer from the underlying io.Reader. It
 // should only be called when there are no unread bytes in d.bytes.
 fn fill(self: *Decoder) !void {
+    // Ensure all bytes have been read before refilling.
     if (self.bytes.i != self.bytes.j) {
-        dbg("{d} {d}\n", .{ self.bytes.i, self.bytes.j });
-        @panic("jpeg: fill called when unread bytes exist");
+        @panic("Decoder.fill called when unread bytes exist");
     }
 
-    // Move the last 2 bytes to the start of the buffer, in case we need
-    // to call unreadByteStuffedByte.
+    // Preserve the last two bytes for potential unread operations.
     if (self.bytes.j > 2) {
         self.bytes.buffer[0] = self.bytes.buffer[self.bytes.j - 2];
         self.bytes.buffer[1] = self.bytes.buffer[self.bytes.j - 1];
         self.bytes.i = 2;
         self.bytes.j = 2;
+    } else {
+        self.bytes.i = 0;
+        self.bytes.j = 0;
     }
 
-    // Fill in the rest of the buffer.
+    // Fill the rest of the buffer.
     const n = try self.r.read(self.bytes.buffer[self.bytes.j..]);
     self.bytes.j += n;
 
-    if (n > 0) {
-        return; // Successfully read bytes, return without error
+    if (n == 0) {
+        return error.UnexpectedEOF;
     }
-
-    // Handle EOF as an unexpected error
-    return error.UnexpectedEOF;
 }
 
 // unreadByteStuffedByte undoes the most recent readByteStuffedByte call,
