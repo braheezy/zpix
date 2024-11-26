@@ -5,7 +5,7 @@
 
 const std = @import("std");
 
-pub const jpeg = @import("jpeg.zig");
+pub const jpeg = @import("jpeg/reader.zig");
 pub const Decoder = jpeg.Decoder;
 
 const print = std.debug.print;
@@ -48,7 +48,10 @@ pub fn main() !void {
             };
             defer jpeg_file.close();
 
-            _ = jpeg.decode(allocator, jpeg_file) catch |err| {
+            var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
+            const reader = bufferedReader.reader().any();
+
+            _ = jpeg.decode(allocator, reader) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
             };
         }
