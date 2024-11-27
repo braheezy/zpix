@@ -11,6 +11,12 @@
     // Paths are relative to the build root. Use the empty string (`""`) to refer to
     // the build root itself.
     // A directory listed here means that all files within, recursively, are included.
+    .dependencies = .{
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/5b5d718.tar.gz",
+            .hash = "122040d9cc905342547e1e9da227a7f16fae5e7ae23134cb62aaef64c5b2c4f58828",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

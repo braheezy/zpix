@@ -1,7 +1,9 @@
 // lutSize is the log-2 size of the Huffman decoder's look-up table.
-const lut_size = 8;
+pub const lut_size = 8;
 // maxNCodes is the maximum (inclusive) number of codes in a Huffman tree.
-const max_num_codes = 256;
+pub const max_num_codes = 256;
+// maxCodeLength is the maximum (inclusive) number of bits in a Huffman code.
+pub const max_code_length = 16;
 
 const HuffTable = @This();
 
