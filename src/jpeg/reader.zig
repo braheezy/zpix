@@ -1,12 +1,6 @@
 const std = @import("std");
 
-const zigimg = @import("zigimg");
-
-const ImageConfig = struct {
-    width: u32,
-    height: u32,
-    pixel_format: ?zigimg.PixelFormat,
-};
+pub const image = @import("../image.zig");
 
 const idct = @import("idct.zig");
 const HuffTable = @import("HuffTable.zig");
@@ -99,11 +93,6 @@ pub const AdobeTransform = enum {
     y_cb_cr_k,
 };
 
-const GrayImage = struct {
-    img: *zigimg.Image,
-    format: zigimg.PixelFormat = zigimg.PixelFormat.grayscale8,
-};
-
 // Component specification, specified in section B.2.2.
 const Component = struct {
     // Horizontal sampling factor.
@@ -150,8 +139,10 @@ bytes: struct {
 width: u32 = 0,
 height: u32 = 0,
 
-img1: ?GrayImage = null,
-img3: ?YCbCrImage = null,
+img1: ?image.GrayImage = null,
+img3: ?image.YCbCr = null,
+black_pixels: ?[]u8 = null,
+black_stride: usize = 0,
 
 restart_interval: u16 = 0,
 num_components: u8 = 0,
@@ -189,7 +180,7 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !void {
     try d.dec(false);
 }
 
-pub fn decodeConfig(r: std.io.AnyReader) !ImageConfig {
+pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
     var d = Decoder{
         .al = undefined,
         .r = r,
@@ -202,21 +193,21 @@ pub fn decodeConfig(r: std.io.AnyReader) !ImageConfig {
     try d.dec(true);
 
     return switch (d.num_components) {
-        1 => ImageConfig{
-            .width = d.width,
-            .height = d.height,
-            .pixel_format = zigimg.PixelFormat.grayscale8,
+        1 => {
+            var m = image.GrayModel.init();
+            return image.Config{
+                .width = d.width,
+                .height = d.height,
+                .color_model = m.model(),
+            };
         },
-        3 => ImageConfig{
+        3 => image.Config{
             .width = d.width,
             .height = d.height,
-            .pixel_format = if (d.isRgb()) zigimg.PixelFormat.rgb24 else null,
         },
-
-        4 => ImageConfig{
+        4 => image.Config{
             .width = d.width,
             .height = d.height,
-            .pixel_format = null,
         },
         else => FormatError.InvalidSOIMarker,
     };
@@ -817,11 +808,15 @@ fn processSos(self: *Decoder, n: i32) !void {
         }
 
         // mxx and myy are the number of MCUs (Minimum Coded Units) in the image.
-        // const h0 = self.comp[0].h;
-        // const v0 = self.comp[0].v;
-        // // const mxx = (self.width + 8 * h0 - 1) / (8 * h0);
-        // // const myy = (self.height + 8 * v0 - 1) / (8 * v0);
-        // if (self.img1) {}
+        const h0 = self.comp[0].h;
+        const v0 = self.comp[0].v;
+        const w: i32 = @intCast(self.width);
+        const h: i32 = @intCast(self.height);
+        const mxx = @divExact(w + 8 * h0 - 1, 8 * h0);
+        const myy = @divExact(h + 8 * v0 - 1, 8 * v0);
+        if (self.img1 == null and self.img3 == null) {
+            try self.makeImg(mxx, myy);
+        }
     }
 }
 
@@ -835,4 +830,55 @@ fn isRgb(self: *Decoder) bool {
     }
 
     return self.comp[0].c == 'R' and self.comp[1].c == 'G' and self.comp[2].c == 'B';
+}
+
+fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
+    if (self.num_components == 1) {
+        const img: *image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
+            0,
+            0,
+            8 * mxx,
+            8 * myy,
+        ));
+        self.img1 = img.subImage(image.Rectangle.init(
+            0,
+            0,
+            @intCast(self.width),
+            @intCast(self.height),
+        ));
+        return;
+    }
+
+    const h0 = self.comp[0].h;
+    const v0 = self.comp[0].v;
+    const h_ratio = @divExact(h0, self.comp[1].h);
+    const v_ratio = @divExact(v0, self.comp[1].v);
+    const subsample_ratio: image.YCbCrSubsample = switch (h_ratio << 4 | v_ratio) {
+        0x11 => .Ratio444,
+        0x12 => .Ratio440,
+        0x21 => .Ratio422,
+        0x22 => .Ratio420,
+        0x41 => .Ratio411,
+        0x42 => .Ratio410,
+        else => unreachable,
+    };
+    const img: *image.YCbCr = try image.YCbCr.init(self.al, image.Rectangle.init(
+        0,
+        0,
+        8 * h0 * mxx,
+        8 * v0 * myy,
+    ), subsample_ratio);
+    self.img3 = img.subImage(image.Rectangle.init(
+        0,
+        0,
+        @intCast(self.width),
+        @intCast(self.height),
+    ));
+
+    if (self.num_components == 4) {
+        const h3 = self.comp[3].h;
+        const v3 = self.comp[3].v;
+        self.black_pixels = try self.al.alloc(u8, @intCast(8 * h3 * mxx * 8 * v3 * myy));
+        self.black_stride = @intCast(8 * h3 * mxx);
+    }
 }
