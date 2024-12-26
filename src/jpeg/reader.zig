@@ -15,6 +15,8 @@ const max_components = 4;
 const max_tc = 1;
 const max_th = 3;
 const max_tq = 3;
+const ac_table = 1;
+const dc_table = 0;
 
 pub const FormatError = error{
     /// SOI marker missing or incorrect
@@ -105,6 +107,17 @@ const Component = struct {
     tq: u8 = 0,
 };
 
+const unzig: [idct.block_size]u8 = [_]u8{
+    0,  1,  8,  16, 9,  2,  3,  10,
+    17, 24, 32, 25, 18, 11, 4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13, 6,  7,  14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63,
+};
+
 const Decoder = @This();
 
 // Bits holds the unprocessed bits that have been taken from the byte-stream.
@@ -178,6 +191,15 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !void {
         .bits = undefined,
     };
     try d.dec(false);
+}
+
+pub fn free(self: *Decoder) !void {
+    if (self.img3) |img| {
+        self.al.free(img.y);
+        self.al.free(img.cb);
+        self.al.free(img.cr);
+        self.al.free(img);
+    }
 }
 
 pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
@@ -264,6 +286,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
         }
         if (marker == @intFromEnum(Marker.eoi)) {
             // Done!
+            std.log.info("End of image\n", .{});
             break;
         }
         if (@intFromEnum(Marker.rst0) <= marker and marker <= @intFromEnum(Marker.rst7)) {
@@ -289,7 +312,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
         switch (marker_enum) {
             .sof0, .sof1, .sof2 => {
                 self.baseline = marker_enum == Marker.sof0;
-                self.progressive = marker_enum == Marker.sof1;
+                self.progressive = marker_enum == Marker.sof2;
                 try self.processSof(n);
                 dbgln("SOF successfully read");
                 if (config_only and self.jfif) {
@@ -299,6 +322,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
             .dqt => {
                 if (config_only) {
                     try self.ignore(n);
+                    dbgln("ignored dqt");
                 } else {
                     try self.processDqt(n);
                     dbgln("DQT successfully read");
@@ -307,6 +331,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
             .dht => {
                 if (config_only) {
                     try self.ignore(n);
+                    dbgln("ignored dht");
                 } else {
                     try self.processDht(n);
                     dbgln("DHT successfully read");
@@ -321,6 +346,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
             else => {
                 if (@intFromEnum(Marker.app0) <= marker and marker <= @intFromEnum(Marker.app15) or marker == @intFromEnum(Marker.com)) {
                     try self.ignore(n);
+                    dbgln("ignored appX");
                 } else if (marker < 0xc0) {
                     // See Table B.1 "Marker code assignments".
                     return FormatError.UnknownMarker;
@@ -452,15 +478,15 @@ fn processSof(self: *Decoder, n: i32) !void {
         return FormatError.MultipleSofMarkers;
     }
 
-    switch (n) {
+    self.num_components = switch (n) {
         // grayscale image
-        6 + 3 * 1 => self.num_components = 1,
+        6 + 3 * 1 => 1,
         // YCbCr or RGB image
-        6 + 3 * 3 => self.num_components = 3,
+        6 + 3 * 3 => 3,
         // CMYK image
-        6 + 3 * 4 => self.num_components = 4,
+        6 + 3 * 4 => 4,
         else => return UnsupportedError.NumberComponents,
-    }
+    };
 
     try self.readFull(self.tmp[0..@intCast(n)]);
 
@@ -709,7 +735,8 @@ fn processSos(self: *Decoder, n: i32) !void {
         return FormatError.MissingSosMarker;
     }
 
-    if (n != 6 or 4 + 2 * self.num_components < n or @mod(n, 2) != 0) {
+    if (n < 6 or 4 + 2 * self.num_components < n or @mod(n, 2) != 0) {
+        std.debug.print("n: {d}, num_comp: {d}\n", .{ n, self.num_components });
         return FormatError.SosWrongLength;
     }
 
@@ -728,19 +755,21 @@ fn processSos(self: *Decoder, n: i32) !void {
         ta: u8,
     };
     var scan = try self.al.alloc(ScanComponent, max_components);
+    defer self.al.free(scan);
     var total_hv: i32 = 0;
     for (0..n_comp) |i| {
         const comp_selector = self.tmp[1 + 2 * i];
-        var comp_index: usize = 0;
+        var comp_index: ?usize = null;
         for (self.comp[0..self.num_components], 0..) |comp, j| {
             if (comp_selector == comp.c) {
                 comp_index = j;
                 break;
             }
-        } else {
+        }
+        if (comp_index == null) {
             return FormatError.UnknownComponentSelector;
         }
-        scan[i].id = @intCast(comp_index);
+        scan[i].id = @intCast(comp_index.?);
         // Section B.2.3 states that "the value of Cs_j shall be different from
         // the values of Cs_1 through Cs_(j-1)". Since we have previously
         // verified that a frame's component identifiers (C_i values in section
@@ -751,7 +780,7 @@ fn processSos(self: *Decoder, n: i32) !void {
                 return FormatError.RepeatedComponentIdentifier;
             }
         }
-        total_hv += self.comp[comp_index].h * self.comp[comp_index].v;
+        total_hv += self.comp[comp_index.?].h * self.comp[comp_index.?].v;
         // The baseline t <= 1 restriction is specified in table B.3.
         scan[i].td = self.tmp[2 + 2 * i] >> 4;
         var t = scan[i].td;
@@ -812,10 +841,155 @@ fn processSos(self: *Decoder, n: i32) !void {
         const v0 = self.comp[0].v;
         const w: i32 = @intCast(self.width);
         const h: i32 = @intCast(self.height);
-        const mxx = @divExact(w + 8 * h0 - 1, 8 * h0);
-        const myy = @divExact(h + 8 * v0 - 1, 8 * v0);
+        const mxx = @divTrunc(w + 8 * h0 - 1, 8 * h0);
+        const myy = @divTrunc(h + 8 * v0 - 1, 8 * v0);
         if (self.img1 == null and self.img3 == null) {
             try self.makeImg(mxx, myy);
+        }
+
+        if (self.progressive) {
+            return error.ProgressiveNotSupported;
+        }
+
+        self.bits = Bits{};
+        var mcu: i32 = 0;
+        var expected_rst = Marker.rst0;
+        var bx: i32 = 0;
+        var by: i32 = 0;
+        var block_count: i32 = 0;
+        var dc: [max_components]i32 = [_]i32{0} ** max_components;
+        var b: idct.Block = undefined;
+
+        for (0..@intCast(myy)) |my| {
+            for (0..@intCast(mxx)) |mx| {
+                for (0..n_comp) |k| {
+                    const c_index = scan[k].id;
+                    const hi = self.comp[c_index].h;
+                    const vi = self.comp[c_index].v;
+
+                    for (0..@intCast(hi * vi)) |j| {
+                        // The blocks are traversed one MCU at a time. For 4:2:0 chroma
+                        // subsampling, there are four Y 8x8 blocks in every 16x16 MCU.
+                        //
+                        // For a sequential 32x16 pixel image, the Y blocks visiting order is:
+                        //	0 1 4 5
+                        //	2 3 6 7
+                        //
+                        // For progressive images, the interleaved scans (those with nComp > 1)
+                        // are traversed as above, but non-interleaved scans are traversed left
+                        // to right, top to bottom:
+                        //	0 1 2 3
+                        //	4 5 6 7
+                        // Only DC scans (zigStart == 0) can be interleaved. AC scans must have
+                        // only one component.
+                        //
+                        // To further complicate matters, for non-interleaved scans, there is no
+                        // data for any blocks that are inside the image at the MCU level but
+                        // outside the image at the pixel level. For example, a 24x16 pixel 4:2:0
+                        // progressive image consists of two 16x16 MCUs. The interleaved scans
+                        // will process 8 Y blocks:
+                        //	0 1 4 5
+                        //	2 3 6 7
+                        // The non-interleaved scans will process only 6 Y blocks:
+                        //	0 1 2
+                        //	3 4 5
+                        if (n_comp != 1) {
+                            const mx_i: i32 = @intCast(mx);
+                            const my_i: i32 = @intCast(my);
+                            bx = hi * mx_i + @mod(@as(i32, @intCast(j)), hi);
+                            by = vi * my_i + @divTrunc(@as(i32, @intCast(j)), hi);
+                        } else {
+                            const q = mxx * hi;
+                            bx = @mod(block_count, q);
+                            by = @divTrunc(block_count, q);
+                            block_count += 1;
+                            if (bx * 8 >= self.width or by * 8 >= self.height) {
+                                continue;
+                            }
+                        }
+
+                        // Load the previous partially decoded coefficients, if applicable.
+                        if (self.progressive) {
+                            // b = self.progCoeffs[c_index][by * mxx * hi + bx];
+                            return error.ProgressiveNotSupported;
+                        } else {
+                            b = idct.emptyBlock();
+                        }
+
+                        if (ah != 0) {
+                            try self.refine(
+                                &b,
+                                &self.huff[ac_table][scan[k].ta],
+                                zig_start,
+                                zig_end,
+                                @as(i32, 1) << @intCast(al),
+                            );
+                        } else {
+                            var zig: i32 = zig_start;
+                            if (zig == 0) {
+                                zig += 1;
+                                const value = try self.decodeHuffman(&self.huff[dc_table][scan[k].td]);
+                                if (value > 16) {
+                                    return UnsupportedError.ExcessiveDCComponent;
+                                }
+                                const dc_delta = try self.receiveExtend(value);
+                                dc[c_index] += dc_delta;
+                                b[0] = dc[c_index] << @intCast(al);
+                            }
+
+                            if (zig <= zig_end and self.eobRun > 0) {
+                                self.eobRun -= 1;
+                            } else {
+                                const huff = &self.huff[ac_table][scan[k].ta];
+                                while (zig <= zig_end) {
+                                    const value = try self.decodeHuffman(huff);
+                                    const val0 = value >> 4;
+                                    const val1 = value & 0x0f;
+
+                                    if (val1 != 0) {
+                                        zig += @intCast(val0);
+                                        if (zig > zig_end) {
+                                            break;
+                                        }
+                                        const ac = try self.receiveExtend(val1);
+                                        b[unzig[@intCast(zig)]] = ac << @intCast(al);
+                                    } else {
+                                        if (val0 != 0x0f) {
+                                            self.eobRun = 1 << @intCast(val0);
+                                            if (val0 != 0) {
+                                                const bits = try self.decodeBits(@intCast(val0));
+                                                self.eobRun |= bits;
+                                            }
+                                            self.eobRun -= 1;
+                                            break;
+                                        }
+                                        zig += 0x0f;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (self.progressive) {
+                            self.progCoeffs[c_index][by * @as(i32, @intCast(self.width)) * hi + bx] = b;
+                            continue;
+                        }
+
+                        try self.reconstructBlock(&b, bx, by, @intCast(c_index));
+                    }
+                }
+
+                mcu += 1;
+                if (self.ri > 0 and mcu % self.ri == 0 and mcu < self.width * self.height) {
+                    try self.readFull(self.tmp[0..2]);
+                    if (self.tmp[0] != 0xff or self.tmp[1] != expected_rst) {
+                        try self.findRST(expected_rst);
+                    }
+                    expected_rst = if (expected_rst == @intFromEnum(Marker.rst7)) @intFromEnum(Marker.rst0) else expected_rst + 1;
+                    self.bits = Bits{};
+                    dc = [_]i32{0} ** max_components;
+                    self.eobRun = 0;
+                }
+            }
         }
     }
 }
@@ -830,6 +1004,68 @@ fn isRgb(self: *Decoder) bool {
     }
 
     return self.comp[0].c == 'R' and self.comp[1].c == 'G' and self.comp[2].c == 'B';
+}
+
+fn refine(self: *Decoder, b: *idct.Block, h: *HuffTable, zig_start: i32, zig_end: i32, delta: i32) !void {
+    // Refining a DC component is trivial.
+    if (zig_start == 0) {
+        if (zig_end != 0) {
+            unreachable;
+        }
+        const bit = try self.decodeBit();
+        if (bit) {
+            b[0] |= delta;
+        }
+        return;
+    }
+
+    // Refining AC components is more complicated; see sections G.1.2.2 and G.1.2.3.
+    var zig: i32 = zig_start;
+
+    if (self.eob_run == 0) {
+        loop: while (zig <= zig_end) : (zig += 1) {
+            var z: i32 = 0;
+            const value = try self.decodeHuffman(h);
+            const val0 = value >> 4;
+            const val1 = value & 0x0F;
+
+            switch (val1) {
+                0 => {
+                    if (val0 != 0x0F) {
+                        self.eob_run = @as(u16, 1) << @intCast(val0);
+                        if (val0 != 0) {
+                            const bits = try self.decodeBits(@intCast(val0));
+                            self.eob_run |= @as(u16, bits);
+                        }
+                        break :loop;
+                    }
+                },
+                1 => {
+                    z = delta;
+                    const bit = try self.decodeBit();
+                    if (!bit) {
+                        z = -z;
+                    }
+                },
+                else => {
+                    return FormatError.UnexpectedHuffmanCode;
+                },
+            }
+
+            zig = try self.refineNonZeroes(b, zig, zig_end, @intCast(val0), delta);
+            if (zig > zig_end) {
+                return FormatError.TooManyCoefficients;
+            }
+            if (z != 0) {
+                b[unzig[@intCast(zig)]] = z;
+            }
+        }
+    }
+
+    if (self.eob_run > 0) {
+        self.eob_run -= 1;
+        _ = try self.refineNonZeroes(b, zig, zig_end, -1, delta);
+    }
 }
 
 fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
@@ -881,4 +1117,168 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
         self.black_pixels = try self.al.alloc(u8, @intCast(8 * h3 * mxx * 8 * v3 * myy));
         self.black_stride = @intCast(8 * h3 * mxx);
     }
+}
+
+fn decodeBit(self: *Decoder) !bool {
+    if (self.bits.n == 0) {
+        try self.ensureNBits(1);
+    }
+    const ret = self.bits.a & self.bits.m != 0;
+    self.bits.n -= 1;
+    self.bits.m >>= 1;
+    return ret;
+}
+
+fn decodeBits(self: *Decoder, n: i32) !u32 {
+    if (self.bits.n < n) {
+        try self.ensureNBits(n);
+    }
+    var ret: u32 = self.bits.a >> @as(u5, @intCast(self.bits.n - n));
+    ret &= (@as(u32, 1) << @as(u5, @intCast(n))) - 1;
+    self.bits.n -= n;
+    self.bits.m >>= @as(u5, @intCast(n));
+    return ret;
+}
+
+// ensureNBits reads bytes from the byte buffer to ensure that d.bits.n is at
+// least n. For best performance (avoiding function calls inside hot loops),
+// the caller is the one responsible for first checking that d.bits.n < n.
+fn ensureNBits(self: *Decoder, n: i32) !void {
+    while (true) {
+        const c = try self.readByteStuffedByte();
+        self.bits.a = (self.bits.a << 8) | @as(u32, c);
+        self.bits.n += 8;
+
+        if (self.bits.m == 0) {
+            self.bits.m = 1 << 7;
+        } else {
+            self.bits.m <<= 8;
+        }
+
+        if (self.bits.n >= n) {
+            break;
+        }
+    }
+}
+
+// readByteStuffedByte is like readByte but is for byte-stuffed Huffman data.
+fn readByteStuffedByte(self: *Decoder) !u8 {
+    // Take the fast path if there are at least two bytes in the buffer.
+    if (self.bytes.i + 2 <= self.bytes.j) {
+        const x = self.bytes.buffer[self.bytes.i];
+        self.bytes.i += 1;
+        self.bytes.num_unreadable = 1;
+
+        if (x != 0xff) {
+            return x;
+        }
+
+        if (self.bytes.buffer[self.bytes.i] != 0x00) {
+            return error.MissingFF00;
+        }
+
+        self.bytes.i += 1;
+        self.bytes.num_unreadable = 2;
+        return 0xff;
+    }
+
+    self.bytes.num_unreadable = 0;
+
+    var x = try self.readByte();
+    self.bytes.num_unreadable = 1;
+
+    if (x != 0xff) {
+        return x;
+    }
+
+    x = try self.readByte();
+    self.bytes.num_unreadable = 2;
+
+    if (x != 0x00) {
+        return error.MissingFF00;
+    }
+
+    return 0xff;
+}
+
+fn decodeHuffman(self: *Decoder, h: *HuffTable) !u8 {
+    if (h.num_codes == 0) {
+        return error.UninitializedHuffmanTable;
+    }
+
+    // Fast path: Check if enough bits are available.
+    const goto_slow_path = if (self.bits.n < 8) blk: {
+        self.ensureNBits(8) catch |err| {
+            if (err != error.MissingFF00 and err != error.ShortHuffmanData) {
+                return err;
+            }
+            // There are no more bytes of data in this segment, but we may still
+            // be able to read the next symbol out of the previously read bits.
+            // First, undo the readByte that the ensureNBits call made.
+            if (self.bytes.num_unreadable != 0) {
+                self.unreadByteStuffedByte();
+            }
+            break :blk true;
+        };
+        break :blk false;
+    } else false;
+
+    if (!goto_slow_path) {
+        // Fast lookup using LUT (Look-Up Table).
+        const v = h.lut[(self.bits.a >> @intCast(self.bits.n - HuffTable.lut_size)) & 0xff];
+        if (v != 0) {
+            const n = (v & 0xff) - 1;
+            self.bits.n -= @intCast(n);
+            self.bits.m >>= n;
+            return @as(u8, v >> 8);
+        }
+    } else {
+        // Slow path: Bit-by-bit decoding.
+        var code: i32 = 0;
+        for (0..HuffTable.max_code_length) |i| {
+            if (self.bits.n == 0) {
+                try self.ensureNBits(1);
+            }
+            if ((self.bits.a & self.bits.m) != 0) {
+                code |= 1;
+            }
+            self.bits.n -= 1;
+            self.bits.m >>= 1;
+
+            if (code <= h.maxCodes[i]) {
+                return h.vals[h.valsIndices[i] + code - h.minCodes[i]];
+            }
+
+            code <<= 1;
+        }
+
+        return error.BadHuffmanCode;
+    }
+}
+
+// refineNonZeroes refines non-zero entries of b in zig-zag order. If nz >= 0,
+// the first nz zero entries are skipped over.
+fn refineNonZeroes(self: *Decoder, b: *idct.block, zig: i32, zig_end: i32, nz: i32, delta: i32) !i32 {
+    while (zig <= zig_end) : (zig += 1) {
+        const u = unzig[@intCast(zig)];
+        if (b[u] == 0) {
+            if (nz == 0) {
+                break;
+            }
+            nz -= 1;
+            continue;
+        }
+
+        const bit = try self.decodeBit();
+        if (!bit) {
+            continue;
+        }
+
+        if (b[u] >= 0) {
+            b[u] += delta;
+        } else {
+            b[u] -= delta;
+        }
+    }
+    return zig;
 }

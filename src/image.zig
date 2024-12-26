@@ -52,6 +52,7 @@ pub const YCbCr = struct {
         const i_1: usize = @intCast((w * h) + (1 * cw * ch));
         const i_2: usize = @intCast((w * h) + (2 * cw * ch));
         const pixels = try al.alloc(u8, i_2);
+        defer al.free(pixels);
         var ycbcr = YCbCr{
             .y = pixels[0..i_0],
             .cb = pixels[i_0..i_1],
@@ -72,7 +73,7 @@ pub const YCbCr = struct {
 
         switch (subsample_ratio) {
             .Ratio422 => {
-                cw = @divExact((r.max.x + 1), 2) - @divExact(r.min.x, 2);
+                cw = @divTrunc((r.max.x + 1), 2) - @divTrunc(r.min.x, 2);
                 ch = h;
             },
             .Ratio420 => {
