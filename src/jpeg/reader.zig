@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const image = @import("../image.zig");
+pub const imageutil = @import("../imageutil.zig");
 
 const idct = @import("idct.zig");
 const HuffTable = @import("HuffTable.zig");
@@ -54,7 +55,7 @@ pub const UnsupportedError = error{
 };
 
 // [Table B.1] Marker code assignments
-pub const Marker = enum(u16) {
+pub const Marker = enum(u8) {
     // Start Of Frame (Baseline Sequential).
     sof0 = 0xc0,
     // Start Of Frame (Extended Sequential).
@@ -152,8 +153,8 @@ bytes: struct {
 width: u32 = 0,
 height: u32 = 0,
 
-img1: ?image.GrayImage = null,
-img3: ?image.YCbCr = null,
+img1: ?*image.GrayImage = null,
+img3: ?image.YCbCrImage = null,
 black_pixels: ?[]u8 = null,
 black_stride: usize = 0,
 
@@ -180,7 +181,7 @@ quant: [max_tq + 1]idct.Block,
 tmp: [2 * idct.block_size]u8 = [_]u8{0} ** (2 * idct.block_size),
 
 // TODO decode reads a JPEG image from r and returns it as an
-pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !void {
+pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     var d = Decoder{
         .al = al,
         .r = r,
@@ -190,15 +191,13 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !void {
         .quant = undefined,
         .bits = undefined,
     };
-    try d.dec(false);
+    defer d.free();
+    return try d.dec(false);
 }
 
-pub fn free(self: *Decoder) !void {
+pub fn free(self: *Decoder) void {
     if (self.img3) |img| {
-        self.al.free(img.y);
-        self.al.free(img.cb);
-        self.al.free(img.cr);
-        self.al.free(img);
+        self.al.free(img.pixels);
     }
 }
 
@@ -212,7 +211,11 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
         .quant = undefined,
         .bits = undefined,
     };
-    try d.dec(true);
+    _ = d.dec(true) catch |err| {
+        if (err != error.ConfigOnly) {
+            return err;
+        }
+    };
 
     return switch (d.num_components) {
         1 => {
@@ -236,7 +239,7 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
 }
 
 // TODO dec reads a JPEG image from r and returns it as an ??
-fn dec(self: *Decoder, config_only: bool) !void {
+fn dec(self: *Decoder, config_only: bool) !image.Image {
     try self.readFull(self.tmp[0..2]);
     // Check for the Start of Image marker.
     if (self.tmp[0] != 0xFF or self.tmp[1] != @intFromEnum(Marker.soi)) {
@@ -286,7 +289,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
         }
         if (marker == @intFromEnum(Marker.eoi)) {
             // Done!
-            std.log.info("End of image\n", .{});
+            dbgln("EOI successfully read");
             break;
         }
         if (@intFromEnum(Marker.rst0) <= marker and marker <= @intFromEnum(Marker.rst7)) {
@@ -316,7 +319,7 @@ fn dec(self: *Decoder, config_only: bool) !void {
                 try self.processSof(n);
                 dbgln("SOF successfully read");
                 if (config_only and self.jfif) {
-                    return;
+                    return error.ConfigOnly;
                 }
             },
             .dqt => {
@@ -339,9 +342,10 @@ fn dec(self: *Decoder, config_only: bool) !void {
             },
             .sos => {
                 if (config_only) {
-                    return;
+                    return error.ConfigOnly;
                 }
                 try self.processSos(n);
+                dbgln("SOS successfully read");
             },
             else => {
                 if (@intFromEnum(Marker.app0) <= marker and marker <= @intFromEnum(Marker.app15) or marker == @intFromEnum(Marker.com)) {
@@ -357,6 +361,19 @@ fn dec(self: *Decoder, config_only: bool) !void {
             },
         }
     }
+
+    if (self.img1) |img| {
+        return img.asImage();
+    }
+    if (self.img3) |_| {
+        if (self.black_pixels) |_| {
+            return try self.applyBlack();
+        } else if (self.isRgb()) {
+            return try self.convertToRGB();
+        }
+        return self.img3.?.asImage();
+    }
+    return error.MissingSosMarker;
 }
 
 // ignore ignores the next n bytes.
@@ -463,6 +480,7 @@ fn fill(self: *Decoder) !void {
 // sometimes overshoot and read one or two too many bytes. Two-byte overshoot
 // can happen when expecting to read a 0xff 0x00 byte-stuffed byte.
 fn unreadByteStuffedByte(self: *Decoder) void {
+    // dbgln("unreadByteStuffedByte");
     self.bytes.i -= self.bytes.num_unreadable;
     self.bytes.num_unreadable = 0;
     if (self.bits.n >= 8) {
@@ -699,7 +717,7 @@ fn processDht(self: *Decoder, n: i32) !void {
                 // The high 8 bits of lutValue are the encoded value.
                 // The low 8 bits are 1 plus the codeLength.
                 const base: u32 = code << @intCast(7 - i);
-                const m: u16 = @intCast(2 * i);
+                const m: u16 = @intCast(2 + i);
                 const lut_value: u16 = @as(u16, h.vals[x]) << @intCast(8) | m;
                 for (0..@as(u16, 1) << @intCast(7 - i)) |k| {
                     h.lut[base | k] = lut_value;
@@ -731,6 +749,7 @@ fn processDht(self: *Decoder, n: i32) !void {
 
 // covered in section B.2.3.
 fn processSos(self: *Decoder, n: i32) !void {
+    // dbgln("processSos");
     if (self.num_components == 0) {
         return FormatError.MissingSosMarker;
     }
@@ -756,6 +775,7 @@ fn processSos(self: *Decoder, n: i32) !void {
     };
     var scan = try self.al.alloc(ScanComponent, max_components);
     defer self.al.free(scan);
+
     var total_hv: i32 = 0;
     for (0..n_comp) |i| {
         const comp_selector = self.tmp[1 + 2 * i];
@@ -792,203 +812,215 @@ fn processSos(self: *Decoder, n: i32) !void {
         if (t > max_th or (self.baseline and t > 1)) {
             return FormatError.BadTaValue;
         }
+    }
 
-        // Section B.2.3 states that if there is more than one component then the
-        // total H*V values in a scan must be <= 10.
-        if (self.num_components > 1 and total_hv > 10) {
-            return FormatError.SamplingFactorsTooLarge;
+    // Section B.2.3 states that if there is more than one component then the
+    // total H*V values in a scan must be <= 10.
+    if (self.num_components > 1 and total_hv > 10) {
+        return FormatError.SamplingFactorsTooLarge;
+    }
+
+    // zigStart and zigEnd are the spectral selection bounds.
+    // ah and al are the successive approximation high and low values.
+    // The spec calls these values Ss, Se, Ah and Al.
+    //
+    // For progressive JPEGs, these are the two more-or-less independent
+    // aspects of progression. Spectral selection progression is when not
+    // all of a block's 64 DCT coefficients are transmitted in one pass.
+    // For example, three passes could transmit coefficient 0 (the DC
+    // component), coefficients 1-5, and coefficients 6-63, in zig-zag
+    // order. Successive approximation is when not all of the bits of a
+    // band of coefficients are transmitted in one pass. For example,
+    // three passes could transmit the 6 most significant bits, followed
+    // by the second-least significant bit, followed by the least
+    // significant bit.
+    //
+    // For sequential JPEGs, these parameters are hard-coded to 0/63/0/0, as
+    // per table B.3.
+    var zig_start: i32 = 0;
+    var zig_end: i32 = idct.block_size - 1;
+    var ah: u32 = 0;
+    var al: u32 = 0;
+    if (self.progressive) {
+        zig_start = self.tmp[1 + 2 * n_comp];
+        zig_end = self.tmp[2 + 2 * n_comp];
+        ah = self.tmp[3 + 2 * n_comp] >> 4;
+        al = self.tmp[3 + 2 * n_comp] & 0x0f;
+        if ((zig_start == 0 and zig_end != 0) or zig_start > zig_end or idct.block_size <= zig_end) {
+            return FormatError.BadSpectralSelection;
         }
-
-        // zigStart and zigEnd are the spectral selection bounds.
-        // ah and al are the successive approximation high and low values.
-        // The spec calls these values Ss, Se, Ah and Al.
-        //
-        // For progressive JPEGs, these are the two more-or-less independent
-        // aspects of progression. Spectral selection progression is when not
-        // all of a block's 64 DCT coefficients are transmitted in one pass.
-        // For example, three passes could transmit coefficient 0 (the DC
-        // component), coefficients 1-5, and coefficients 6-63, in zig-zag
-        // order. Successive approximation is when not all of the bits of a
-        // band of coefficients are transmitted in one pass. For example,
-        // three passes could transmit the 6 most significant bits, followed
-        // by the second-least significant bit, followed by the least
-        // significant bit.
-        //
-        // For sequential JPEGs, these parameters are hard-coded to 0/63/0/0, as
-        // per table B.3.
-        var zig_start: i32 = 0;
-        var zig_end: i32 = idct.block_size - 1;
-        var ah: u32 = 0;
-        var al: u32 = 0;
-        if (self.progressive) {
-            zig_start = self.tmp[1 + 2 * n_comp];
-            zig_end = self.tmp[2 + 2 * n_comp];
-            ah = self.tmp[3 + 2 * n_comp] >> 4;
-            al = self.tmp[3 + 2 * n_comp] & 0x0f;
-            if ((zig_start == 0 and zig_end != 0) or zig_start > zig_end or idct.block_size <= zig_end) {
-                return FormatError.BadSpectralSelection;
-            }
-            if (zig_start != 0 and n_comp != 1) {
-                return FormatError.ProgressiveACCoefficientsForMoreThanOneComponent;
-            }
-            if (ah != 0 and ah != al + 1) {
-                return FormatError.BadSuccessiveApproximation;
-            }
+        if (zig_start != 0 and n_comp != 1) {
+            return FormatError.ProgressiveACCoefficientsForMoreThanOneComponent;
         }
-
-        // mxx and myy are the number of MCUs (Minimum Coded Units) in the image.
-        const h0 = self.comp[0].h;
-        const v0 = self.comp[0].v;
-        const w: i32 = @intCast(self.width);
-        const h: i32 = @intCast(self.height);
-        const mxx = @divTrunc(w + 8 * h0 - 1, 8 * h0);
-        const myy = @divTrunc(h + 8 * v0 - 1, 8 * v0);
-        if (self.img1 == null and self.img3 == null) {
-            try self.makeImg(mxx, myy);
+        if (ah != 0 and ah != al + 1) {
+            return FormatError.BadSuccessiveApproximation;
         }
+    }
 
-        if (self.progressive) {
-            return error.ProgressiveNotSupported;
-        }
+    // mxx and myy are the number of MCUs (Minimum Coded Units) in the image.
+    const h0 = self.comp[0].h;
+    const v0 = self.comp[0].v;
+    const w: i32 = @intCast(self.width);
+    const h: i32 = @intCast(self.height);
+    const mxx = @divTrunc(w + 8 * h0 - 1, 8 * h0);
+    const myy = @divTrunc(h + 8 * v0 - 1, 8 * v0);
+    if (self.img1 == null and self.img3 == null) {
+        try self.makeImg(mxx, myy);
+    }
 
-        self.bits = Bits{};
-        var mcu: i32 = 0;
-        var expected_rst = Marker.rst0;
-        var bx: i32 = 0;
-        var by: i32 = 0;
-        var block_count: i32 = 0;
-        var dc: [max_components]i32 = [_]i32{0} ** max_components;
-        var b: idct.Block = undefined;
+    if (self.progressive) {
+        return error.ProgressiveNotSupported;
+    }
 
-        for (0..@intCast(myy)) |my| {
-            for (0..@intCast(mxx)) |mx| {
-                for (0..n_comp) |k| {
-                    const c_index = scan[k].id;
-                    const hi = self.comp[c_index].h;
-                    const vi = self.comp[c_index].v;
+    self.bits = Bits{};
+    var mcu: i32 = 0;
+    var expected_rst = Marker.rst0;
+    var bx: i32 = 0;
+    var by: i32 = 0;
+    var block_count: i32 = 0;
+    var dc: [max_components]i32 = [_]i32{0} ** max_components;
+    var b: idct.Block = undefined;
 
-                    for (0..@intCast(hi * vi)) |j| {
-                        // The blocks are traversed one MCU at a time. For 4:2:0 chroma
-                        // subsampling, there are four Y 8x8 blocks in every 16x16 MCU.
-                        //
-                        // For a sequential 32x16 pixel image, the Y blocks visiting order is:
-                        //	0 1 4 5
-                        //	2 3 6 7
-                        //
-                        // For progressive images, the interleaved scans (those with nComp > 1)
-                        // are traversed as above, but non-interleaved scans are traversed left
-                        // to right, top to bottom:
-                        //	0 1 2 3
-                        //	4 5 6 7
-                        // Only DC scans (zigStart == 0) can be interleaved. AC scans must have
-                        // only one component.
-                        //
-                        // To further complicate matters, for non-interleaved scans, there is no
-                        // data for any blocks that are inside the image at the MCU level but
-                        // outside the image at the pixel level. For example, a 24x16 pixel 4:2:0
-                        // progressive image consists of two 16x16 MCUs. The interleaved scans
-                        // will process 8 Y blocks:
-                        //	0 1 4 5
-                        //	2 3 6 7
-                        // The non-interleaved scans will process only 6 Y blocks:
-                        //	0 1 2
-                        //	3 4 5
-                        if (n_comp != 1) {
-                            const mx_i: i32 = @intCast(mx);
-                            const my_i: i32 = @intCast(my);
-                            bx = hi * mx_i + @mod(@as(i32, @intCast(j)), hi);
-                            by = vi * my_i + @divTrunc(@as(i32, @intCast(j)), hi);
-                        } else {
-                            const q = mxx * hi;
-                            bx = @mod(block_count, q);
-                            by = @divTrunc(block_count, q);
-                            block_count += 1;
-                            if (bx * 8 >= self.width or by * 8 >= self.height) {
-                                continue;
-                            }
-                        }
+    for (0..@intCast(myy)) |my| {
+        for (0..@intCast(mxx)) |mx| {
+            for (0..n_comp) |k| {
+                const c_index = scan[k].id;
+                const hi = self.comp[c_index].h;
+                const vi = self.comp[c_index].v;
 
-                        // Load the previous partially decoded coefficients, if applicable.
-                        if (self.progressive) {
-                            // b = self.progCoeffs[c_index][by * mxx * hi + bx];
-                            return error.ProgressiveNotSupported;
-                        } else {
-                            b = idct.emptyBlock();
-                        }
-
-                        if (ah != 0) {
-                            try self.refine(
-                                &b,
-                                &self.huff[ac_table][scan[k].ta],
-                                zig_start,
-                                zig_end,
-                                @as(i32, 1) << @intCast(al),
-                            );
-                        } else {
-                            var zig: i32 = zig_start;
-                            if (zig == 0) {
-                                zig += 1;
-                                const value = try self.decodeHuffman(&self.huff[dc_table][scan[k].td]);
-                                if (value > 16) {
-                                    return UnsupportedError.ExcessiveDCComponent;
-                                }
-                                const dc_delta = try self.receiveExtend(value);
-                                dc[c_index] += dc_delta;
-                                b[0] = dc[c_index] << @intCast(al);
-                            }
-
-                            if (zig <= zig_end and self.eobRun > 0) {
-                                self.eobRun -= 1;
-                            } else {
-                                const huff = &self.huff[ac_table][scan[k].ta];
-                                while (zig <= zig_end) {
-                                    const value = try self.decodeHuffman(huff);
-                                    const val0 = value >> 4;
-                                    const val1 = value & 0x0f;
-
-                                    if (val1 != 0) {
-                                        zig += @intCast(val0);
-                                        if (zig > zig_end) {
-                                            break;
-                                        }
-                                        const ac = try self.receiveExtend(val1);
-                                        b[unzig[@intCast(zig)]] = ac << @intCast(al);
-                                    } else {
-                                        if (val0 != 0x0f) {
-                                            self.eobRun = 1 << @intCast(val0);
-                                            if (val0 != 0) {
-                                                const bits = try self.decodeBits(@intCast(val0));
-                                                self.eobRun |= bits;
-                                            }
-                                            self.eobRun -= 1;
-                                            break;
-                                        }
-                                        zig += 0x0f;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (self.progressive) {
-                            self.progCoeffs[c_index][by * @as(i32, @intCast(self.width)) * hi + bx] = b;
+                for (0..@intCast(hi * vi)) |j| {
+                    // The blocks are traversed one MCU at a time. For 4:2:0 chroma
+                    // subsampling, there are four Y 8x8 blocks in every 16x16 MCU.
+                    //
+                    // For a sequential 32x16 pixel image, the Y blocks visiting order is:
+                    //	0 1 4 5
+                    //	2 3 6 7
+                    //
+                    // For progressive images, the interleaved scans (those with nComp > 1)
+                    // are traversed as above, but non-interleaved scans are traversed left
+                    // to right, top to bottom:
+                    //	0 1 2 3
+                    //	4 5 6 7
+                    // Only DC scans (zigStart == 0) can be interleaved. AC scans must have
+                    // only one component.
+                    //
+                    // To further complicate matters, for non-interleaved scans, there is no
+                    // data for any blocks that are inside the image at the MCU level but
+                    // outside the image at the pixel level. For example, a 24x16 pixel 4:2:0
+                    // progressive image consists of two 16x16 MCUs. The interleaved scans
+                    // will process 8 Y blocks:
+                    //	0 1 4 5
+                    //	2 3 6 7
+                    // The non-interleaved scans will process only 6 Y blocks:
+                    //	0 1 2
+                    //	3 4 5
+                    if (n_comp != 1) {
+                        const mx_i: i32 = @intCast(mx);
+                        const my_i: i32 = @intCast(my);
+                        bx = hi * mx_i + @mod(@as(i32, @intCast(j)), hi);
+                        by = vi * my_i + @divTrunc(@as(i32, @intCast(j)), hi);
+                    } else {
+                        const q = mxx * hi;
+                        bx = @mod(block_count, q);
+                        by = @divTrunc(block_count, q);
+                        block_count += 1;
+                        if (bx * 8 >= self.width or by * 8 >= self.height) {
                             continue;
                         }
-
-                        try self.reconstructBlock(&b, bx, by, @intCast(c_index));
                     }
-                }
 
-                mcu += 1;
-                if (self.ri > 0 and mcu % self.ri == 0 and mcu < self.width * self.height) {
-                    try self.readFull(self.tmp[0..2]);
-                    if (self.tmp[0] != 0xff or self.tmp[1] != expected_rst) {
-                        try self.findRST(expected_rst);
+                    // Load the previous partially decoded coefficients, if applicable.
+                    if (self.progressive) {
+                        // b = self.progCoeffs[c_index][by * mxx * hi + bx];
+                        return error.ProgressiveNotSupported;
+                    } else {
+                        b = idct.emptyBlock();
                     }
-                    expected_rst = if (expected_rst == @intFromEnum(Marker.rst7)) @intFromEnum(Marker.rst0) else expected_rst + 1;
-                    self.bits = Bits{};
-                    dc = [_]i32{0} ** max_components;
-                    self.eobRun = 0;
+
+                    if (ah != 0) {
+                        try self.refine(
+                            &b,
+                            &self.huff[ac_table][scan[k].ta],
+                            zig_start,
+                            zig_end,
+                            @as(i32, 1) << @intCast(al),
+                        );
+                    } else {
+                        var zig: i32 = zig_start;
+                        if (zig == 0) {
+                            zig += 1;
+                            const value = try self.decodeHuffman(&self.huff[dc_table][scan[k].td]);
+                            if (value > 16) {
+                                return error.ExcessiveDCComponent;
+                            }
+                            const dc_delta = try self.receiveExtend(value);
+                            dc[c_index] += dc_delta;
+                            b[0] = dc[c_index] << @intCast(al);
+                        }
+
+                        if (zig <= zig_end and self.eob_run > 0) {
+                            self.eob_run -= 1;
+                        } else {
+                            const huff = &self.huff[ac_table][scan[k].ta];
+                            while (zig <= zig_end) {
+                                const value = try self.decodeHuffman(huff);
+                                const val0 = value >> 4;
+                                const val1 = value & 0x0f;
+
+                                if (val1 != 0) {
+                                    zig += @intCast(val0);
+                                    if (zig > zig_end) {
+                                        break;
+                                    }
+                                    const ac = try self.receiveExtend(val1);
+                                    b[unzig[@intCast(zig)]] = ac << @intCast(al);
+                                } else {
+                                    if (val0 != 0x0f) {
+                                        self.eob_run = @as(u16, 1) << @intCast(val0);
+                                        if (val0 != 0) {
+                                            const bits = try self.decodeBits(@intCast(val0));
+                                            self.eob_run |= @intCast(bits);
+                                        }
+                                        self.eob_run -= 1;
+                                        break;
+                                    }
+                                    zig += 0x0f;
+                                }
+                            }
+                        }
+                    }
+
+                    if (self.progressive) {
+                        // self.progCoeffs[c_index][by * @as(i32, @intCast(self.width)) * hi + bx] = b;
+                        // At this point, we could call reconstructBlock to dequantize and perform the
+                        // inverse DCT, to save early stages of a progressive image to the *image.YCbCr
+                        // buffers (the whole point of progressive encoding), but in Go, the jpeg.Decode
+                        // function does not return until the entire image is decoded, so we "continue"
+                        // here to avoid wasted computation. Instead, reconstructBlock is called on each
+                        // accumulated block by the reconstructProgressiveImage method after all of the
+                        // SOS markers are processed.
+                        continue;
+                    }
+
+                    try self.reconstructBlock(&b, bx, by, @intCast(c_index));
                 }
+            }
+
+            mcu += 1;
+            if (self.restart_interval > 0 and @mod(mcu, self.restart_interval) == 0 and mcu < mxx * myy) {
+                try self.readFull(self.tmp[0..2]);
+                if (self.tmp[0] != 0xff or self.tmp[1] != @intFromEnum(expected_rst)) {
+                    try self.findRst(@intFromEnum(expected_rst));
+                }
+                expected_rst = @enumFromInt(@intFromEnum(expected_rst) + 1);
+                const max_rst: Marker = @enumFromInt(@intFromEnum(Marker.rst7) + 1);
+                // wrap around
+                if (expected_rst == max_rst) {
+                    expected_rst = Marker.rst0;
+                }
+                self.bits = Bits{};
+                dc = [_]i32{0} ** max_components;
+                self.eob_run = 0;
             }
         }
     }
@@ -1007,6 +1039,7 @@ fn isRgb(self: *Decoder) bool {
 }
 
 fn refine(self: *Decoder, b: *idct.Block, h: *HuffTable, zig_start: i32, zig_end: i32, delta: i32) !void {
+    dbgln("refine");
     // Refining a DC component is trivial.
     if (zig_start == 0) {
         if (zig_end != 0) {
@@ -1035,7 +1068,7 @@ fn refine(self: *Decoder, b: *idct.Block, h: *HuffTable, zig_start: i32, zig_end
                         self.eob_run = @as(u16, 1) << @intCast(val0);
                         if (val0 != 0) {
                             const bits = try self.decodeBits(@intCast(val0));
-                            self.eob_run |= @as(u16, bits);
+                            self.eob_run |= @as(u16, @intCast(bits));
                         }
                         break :loop;
                     }
@@ -1048,13 +1081,13 @@ fn refine(self: *Decoder, b: *idct.Block, h: *HuffTable, zig_start: i32, zig_end
                     }
                 },
                 else => {
-                    return FormatError.UnexpectedHuffmanCode;
+                    return error.UnexpectedHuffmanCode;
                 },
             }
 
             zig = try self.refineNonZeroes(b, zig, zig_end, @intCast(val0), delta);
             if (zig > zig_end) {
-                return FormatError.TooManyCoefficients;
+                return error.TooManyCoefficients;
             }
             if (z != 0) {
                 b[unzig[@intCast(zig)]] = z;
@@ -1076,7 +1109,7 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
             8 * mxx,
             8 * myy,
         ));
-        self.img1 = img.subImage(image.Rectangle.init(
+        self.img1 = try img.subImage(self.al, image.Rectangle.init(
             0,
             0,
             @intCast(self.width),
@@ -1098,12 +1131,13 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
         0x42 => .Ratio410,
         else => unreachable,
     };
-    const img: *image.YCbCr = try image.YCbCr.init(self.al, image.Rectangle.init(
+    var img: image.YCbCrImage = try image.YCbCrImage.init(self.al, image.Rectangle.init(
         0,
         0,
         8 * h0 * mxx,
         8 * v0 * myy,
     ), subsample_ratio);
+
     self.img3 = img.subImage(image.Rectangle.init(
         0,
         0,
@@ -1120,6 +1154,7 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
 }
 
 fn decodeBit(self: *Decoder) !bool {
+    dbgln("decodeBit");
     if (self.bits.n == 0) {
         try self.ensureNBits(1);
     }
@@ -1130,6 +1165,7 @@ fn decodeBit(self: *Decoder) !bool {
 }
 
 fn decodeBits(self: *Decoder, n: i32) !u32 {
+    dbgln("decodeBits");
     if (self.bits.n < n) {
         try self.ensureNBits(n);
     }
@@ -1144,6 +1180,7 @@ fn decodeBits(self: *Decoder, n: i32) !u32 {
 // least n. For best performance (avoiding function calls inside hot loops),
 // the caller is the one responsible for first checking that d.bits.n < n.
 fn ensureNBits(self: *Decoder, n: i32) !void {
+    // dbgln("ensureNBits");
     while (true) {
         const c = try self.readByteStuffedByte();
         self.bits.a = (self.bits.a << 8) | @as(u32, c);
@@ -1163,6 +1200,7 @@ fn ensureNBits(self: *Decoder, n: i32) !void {
 
 // readByteStuffedByte is like readByte but is for byte-stuffed Huffman data.
 fn readByteStuffedByte(self: *Decoder) !u8 {
+    // dbgln("readByteStuffedByte");
     // Take the fast path if there are at least two bytes in the buffer.
     if (self.bytes.i + 2 <= self.bytes.j) {
         const x = self.bytes.buffer[self.bytes.i];
@@ -1202,6 +1240,7 @@ fn readByteStuffedByte(self: *Decoder) !u8 {
 }
 
 fn decodeHuffman(self: *Decoder, h: *HuffTable) !u8 {
+    // dbgln("decodeHuffman");
     if (h.num_codes == 0) {
         return error.UninitializedHuffmanTable;
     }
@@ -1223,49 +1262,61 @@ fn decodeHuffman(self: *Decoder, h: *HuffTable) !u8 {
         break :blk false;
     } else false;
 
+    // dbg("goto_slow_path: {any}\n", .{goto_slow_path});
+
     if (!goto_slow_path) {
         // Fast lookup using LUT (Look-Up Table).
         const v = h.lut[(self.bits.a >> @intCast(self.bits.n - HuffTable.lut_size)) & 0xff];
+
         if (v != 0) {
-            const n = (v & 0xff) - 1;
+            // dbgln("fast path");
+            // dbg("v: {d}\n", .{v});
+            const n = @as(i32, @intCast(v & 0xff)) - 1;
+            // dbg("n: {d}\n", .{n});
+
             self.bits.n -= @intCast(n);
-            self.bits.m >>= n;
-            return @as(u8, v >> 8);
+            self.bits.m >>= @intCast(n);
+
+            return @as(u8, @intCast(v >> 8));
         }
-    } else {
-        // Slow path: Bit-by-bit decoding.
-        var code: i32 = 0;
-        for (0..HuffTable.max_code_length) |i| {
-            if (self.bits.n == 0) {
-                try self.ensureNBits(1);
-            }
-            if ((self.bits.a & self.bits.m) != 0) {
-                code |= 1;
-            }
-            self.bits.n -= 1;
-            self.bits.m >>= 1;
-
-            if (code <= h.maxCodes[i]) {
-                return h.vals[h.valsIndices[i] + code - h.minCodes[i]];
-            }
-
-            code <<= 1;
-        }
-
-        return error.BadHuffmanCode;
     }
+
+    // Slow path: Bit-by-bit decoding.
+    var code: i32 = 0;
+    // dbg("max code length: {d}\n", .{HuffTable.max_code_length});
+    for (0..HuffTable.max_code_length) |i| {
+        if (self.bits.n == 0) {
+            try self.ensureNBits(1);
+        }
+        if ((self.bits.a & self.bits.m) != 0) {
+            code |= 1;
+        }
+        self.bits.n -= 1;
+        self.bits.m >>= 1;
+
+        // dbg("checking {d} <= {d}\n", .{ code, h.max_codes[i] });
+        if (code <= h.max_codes[i]) {
+            return h.vals[@as(usize, @intCast(h.vals_indices[i] + code - h.min_codes[i]))];
+        }
+
+        code <<= 1;
+    } else return error.BadHuffmanCode;
 }
 
 // refineNonZeroes refines non-zero entries of b in zig-zag order. If nz >= 0,
 // the first nz zero entries are skipped over.
-fn refineNonZeroes(self: *Decoder, b: *idct.block, zig: i32, zig_end: i32, nz: i32, delta: i32) !i32 {
-    while (zig <= zig_end) : (zig += 1) {
-        const u = unzig[@intCast(zig)];
+fn refineNonZeroes(self: *Decoder, b: *idct.Block, zig: i32, zig_end: i32, nz: i32, delta: i32) !i32 {
+    dbgln("decodeHuffman");
+    var local_nz = nz;
+    var local_zig = zig;
+
+    while (local_zig <= zig_end) : (local_zig += 1) {
+        const u = unzig[@intCast(local_zig)];
         if (b[u] == 0) {
-            if (nz == 0) {
+            if (local_nz == 0) {
                 break;
             }
-            nz -= 1;
+            local_nz -= 1;
             continue;
         }
 
@@ -1281,4 +1332,282 @@ fn refineNonZeroes(self: *Decoder, b: *idct.block, zig: i32, zig_end: i32, nz: i
         }
     }
     return zig;
+}
+
+// receiveExtend is the composition of RECEIVE and EXTEND, specified in section
+// F.2.2.1.
+pub fn receiveExtend(self: *Decoder, t: u8) !i32 {
+    // dbgln("receiveExtend");
+    if (self.bits.n < @as(i32, t)) {
+        try self.ensureNBits(@as(i32, t));
+    }
+
+    // Adjust bit count and shift
+    self.bits.n -= @as(i32, t);
+    self.bits.m >>= @intCast(t);
+
+    // Perform RECEIVE step
+    const s = @as(i32, 1) << @intCast(t);
+    var x: i32 = @intCast((self.bits.a >> @intCast(self.bits.n)) & @as(u32, @intCast(s - 1)));
+
+    // Perform EXTEND step
+    if (x < (s >> 1)) {
+        x += ((@as(i32, -1) << @intCast(t)) + 1);
+    }
+
+    return x;
+}
+
+// reconstructBlock dequantizes, performs the inverse DCT and stores the block
+// to the image.
+pub fn reconstructBlock(
+    self: *Decoder,
+    b: *idct.Block,
+    block_x: i32,
+    block_y: i32,
+    comp_index: usize,
+) !void {
+    // dbgln("reconstructBlock");
+    const bx: usize = @intCast(block_x);
+    const by: usize = @intCast(block_y);
+
+    // Step 1: Dequantize the block.
+    const qt = &self.quant[self.comp[comp_index].tq];
+    for (0..idct.block_size) |zig| {
+        b[unzig[zig]] *= qt[zig];
+    }
+
+    // Step 2: Perform the Inverse Discrete Cosine Transform (IDCT).
+    idct.transform(b);
+    // dbgln("idct.transform done");
+
+    // Step 3: Map the dequantized block to the destination buffer.
+    var dst: []u8 = undefined;
+    var stride: usize = 0;
+
+    if (self.num_components == 1) {
+        // Single-component (Grayscale)
+        dst = self.img1.?.pixels[8 * (by * self.img1.?.stride + bx) ..];
+        // dbg("1 dst is no longer undefined: {d}\n", .{dst.len});
+        stride = self.img1.?.stride;
+    } else {
+        // Multi-component (YCbCr or additional black channel)
+        switch (comp_index) {
+            0 => {
+                if (self.img3 == null) std.debug.panic("oh no", .{});
+                // dbg("bx: {d}, by: {d}, self.img3.?.y_stride: {d}\n", .{ bx, by, self.img3.?.y_stride });
+                dst = self.img3.?.y[8 * (by * self.img3.?.y_stride + bx) ..];
+                // dbg("2 dst is no longer undefined: {d}\n", .{dst.len});
+                // dbg("stuff: {d}\n", .{self.img3.?.cb[0]});
+                stride = self.img3.?.y_stride;
+            },
+            1 => {
+                dst = self.img3.?.cb[8 * (by * self.img3.?.c_stride + bx) ..];
+                // dbg("3 dst is no longer undefined: {d}\n", .{dst.len});
+                stride = self.img3.?.c_stride;
+            },
+            2 => {
+                dst = self.img3.?.cr[8 * (by * self.img3.?.c_stride + bx) ..];
+                // dbg("4 dst is no longer undefined: {d}\n", .{dst.len});
+                stride = self.img3.?.c_stride;
+            },
+            3 => {
+                dst = self.black_pixels.?[8 * (by * self.black_stride + bx) ..];
+                // dbg("5 dst is no longer undefined: {d}\n", .{dst.len});
+                stride = self.black_stride;
+            },
+            else => return error.UnsupportedComponent,
+        }
+    }
+    // dbgln("set dst and stride");
+
+    // Step 4: Level shift by +128, clip to [0, 255], and write to `dst`.
+    for (0..8) |y| {
+        const y8 = y * 8; // Row offset in the block.
+        const yStride = y * stride; // Row offset in the image buffer.
+
+        // dbg("y8: {d}, yStride: {d}\n", .{ y8, yStride });
+        for (0..8) |x| {
+            var c: i32 = b[y8 + x]; // Get coefficient from the block.
+
+            // Level shift and clipping.
+            if (c < -128) {
+                c = 0;
+            } else if (c > 127) {
+                c = 255;
+            } else {
+                c += 128;
+            }
+
+            // dbg("writing clipped value {d} at {d}\n", .{ c, yStride + x });
+            // dbg("dst peek 1: {d}\n", .{dst[0]});
+            dst[yStride + x] = @as(u8, @intCast(c)); // Write clipped value to the buffer.
+        }
+    }
+}
+
+// findRST advances past the next RST restart marker that matches expectedRST.
+// Other than I/O errors, it is also an error if we encounter an {0xFF, M}
+// two-byte marker sequence where M is not 0x00, 0xFF or the expectedRST.
+//
+// This is similar to libjpeg's jdmarker.c's next_marker function.
+// https://github.com/libjpeg-turbo/libjpeg-turbo/blob/2dfe6c0fe9e18671105e94f7cbf044d4a1d157e6/jdmarker.c#L892-L935
+//
+// Precondition: d.tmp[:2] holds the next two bytes of JPEG-encoded input
+// (input in the d.readFull sense).
+pub fn findRst(self: *Decoder, expected_rst: u8) !void {
+    dbgln("findRST");
+    while (true) {
+        // i is the index such that, at the bottom of the loop, we read 2-i
+        // bytes into d.tmp[i:2], maintaining the invariant that d.tmp[:2]
+        // holds the next two bytes of JPEG-encoded input. It is either 0 or 1,
+        // so that each iteration advances by 1 or 2 bytes (or returns).
+        var i: usize = 0;
+
+        if (self.tmp[0] == 0xFF) {
+            if (self.tmp[1] == expected_rst) {
+                // Found the expected RST marker, return successfully.
+                return;
+            } else if (self.tmp[1] == 0xFF) {
+                // Encountered another `0xFF`, skip one byte and continue.
+                i = 1;
+            } else if (self.tmp[1] != 0x00) {
+                // libjpeg's jdmarker.c's jpeg_resync_to_restart does something
+                // fancy here, treating RST markers within two (modulo 8) of
+                // expectedRST differently from RST markers that are 'more
+                // distant'. Until we see evidence that recovering from such
+                // cases is frequent enough to be worth the complexity, we take
+                // a simpler approach for now. Any marker that's not 0x00, 0xff
+                // or expectedRST is a fatal FormatError.
+                return error.BadRSTMarker;
+            }
+        } else if (self.tmp[1] == 0xFF) {
+            // Shift the second byte to the first position and read a new second byte.
+            self.tmp[0] = 0xFF;
+            i = 1;
+        }
+
+        // Read the next byte(s) into `d.tmp[i..2]`, ensuring the invariant holds.
+        try self.readFull(self.tmp[i..2]);
+    }
+}
+
+pub fn convertToRGB(self: *Decoder) !image.Image {
+    const c_scale: usize = @intCast(@divTrunc(self.comp[0].h, self.comp[1].h));
+    const bounds = self.img3.?.bounds();
+    const img = try image.RGBAImage.init(self.al, bounds);
+
+    var y = bounds.min.y;
+    while (y < bounds.max.y) : (y += 1) {
+        const po: usize = @intCast(img.pixOffset(bounds.min.x, y));
+        const yo: usize = @intCast(self.img3.?.yOffset(bounds.min.x, y));
+        const co: usize = @intCast(self.img3.?.cOffset(bounds.min.x, y));
+
+        var i: usize = 0;
+        const i_max = bounds.max.x - bounds.min.x;
+        while (i < i_max) : (i += 1) {
+            img.pixels[po + 4 * i + 0] = self.img3.?.y[yo + i];
+            img.pixels[po + 4 * i + 1] = self.img3.?.cb[co + i / c_scale];
+            img.pixels[po + 4 * i + 2] = self.img3.?.cr[co + i / c_scale];
+            img.pixels[po + 4 * i + 3] = 255;
+        }
+    }
+    return img.asImage();
+}
+
+/// applyBlack combines d.img3 and d.blackPix into a CMYK image.
+/// The formula used depends on whether the JPEG image is stored as CMYK or YCbCrK,
+/// indicated by the APP14 (Adobe) metadata.
+///
+/// Adobe CMYK JPEG images are inverted, where 255 means no ink instead of full ink,
+/// so we apply "v = 255 - v" at various points. Note that a double inversion is
+/// a no-op, so inversions might be implicit in the code below.
+pub fn applyBlack(self: *Decoder) !image.Image {
+    if (!self.adobe_transform_valid) {
+        return error.UnsupportedColorModel;
+    }
+
+    // If the 4-component JPEG image isn't explicitly marked as "Unknown (RGB or CMYK)"
+    // we assume that it is YCbCrK. This matches libjpeg's behavior.
+    if (self.adobe_transform != .unknown) {
+        // Convert the YCbCr part of the YCbCrK to RGB, invert the RGB to get CMY,
+        // and patch in the original K. The RGB to CMY inversion cancels out the
+        // 'Adobe inversion' described above, so in practice, only the fourth channel (black) is inverted.
+
+        const bounds = self.img3.?.bounds();
+        var img = try image.RGBAImage.init(self.al, bounds);
+
+        try imageutil.drawYCbCr(img, bounds, &self.img3.?, bounds.min);
+
+        var i_base: usize = 0;
+        var y: i32 = bounds.min.y;
+        while (y < bounds.max.y) {
+            y += 1;
+            i_base += img.stride;
+            var i: usize = i_base + 3;
+            var x: i32 = bounds.min.x;
+            while (x < bounds.max.x) {
+                x += 1;
+                i += 4;
+
+                const y_delta: usize = @intCast(y - bounds.min.y);
+                const x_delta: usize = @intCast(x - bounds.min.x);
+
+                img.pixels[i] = 255 - self.black_pixels.?[y_delta * self.black_stride + x_delta];
+            }
+        }
+
+        // const cmyk_img = try self.al.create(image.CMYK);
+        // cmyk_img.* = .{
+        //     .pixels = img.pixels,
+        //     .stride = img.stride,
+        //     .rect = img.rect,
+        // };
+
+        // return @ptrCast(*image.Image, cmyk_img);
+        return error.CMYKImageNotSupported;
+    }
+
+    return error.CMYKImageNotSupported;
+    // The first three channels (cyan, magenta, yellow) of the CMYK were decoded into self.img3,
+    // but each channel was decoded into a separate slice, and some channels may be subsampled.
+    // We interleave the separate channels into an image.CMYK's single []u8 slice containing
+    // 4 contiguous bytes per pixel.
+    // const bounds = self.img3.?.bounds();
+    // var img = try image.CMYK.init(self.al, bounds);
+
+    // const translations = [_]struct {
+    //     src: []u8,
+    //     stride: usize,
+    // }{
+    //     .{ .src = self.img3.?.y, .stride = self.img3.?.y_stride },
+    //     .{ .src = self.img3.?.cb, .stride = self.img3.?.c_stride },
+    //     .{ .src = self.img3.?.cr, .stride = self.img3.?.c_stride },
+    //     .{ .src = self.black_pixels.?, .stride = self.black_stride },
+    // };
+
+    // for (translations, 0..) |translation, t| {
+    //     const subsample = self.comp[t].h != self.comp[0].h or self.comp[t].v != self.comp[0].v;
+
+    //     var i_base: usize = 0;
+    //     var y: i32 = bounds.min.y;
+    //     while (y < bounds.max.y) : (y += 1, i_base += img.stride) {
+    //         var sy = y - bounds.min.y;
+    //         if (subsample) {
+    //             sy /= 2;
+    //         }
+
+    //         var i: usize = i_base + t;
+    //         var x: i32 = bounds.min.x;
+    //         while (x < bounds.max.x) : (x += 1, i += 4) {
+    //             var sx = x - bounds.min.x;
+    //             if (subsample) {
+    //                 sx /= 2;
+    //             }
+    //             img.pixels[i] = 255 - translation.src[sy * translation.stride + sx];
+    //         }
+    //     }
+    // }
+
+    // return @ptrCast(*image.Image, img);
 }

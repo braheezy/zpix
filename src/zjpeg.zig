@@ -4,6 +4,11 @@
 //!
 
 const std = @import("std");
+const image = @import("image.zig");
+
+const sdl = @cImport({
+    @cInclude("SDL2/SDL.h");
+});
 
 pub const jpeg = @import("jpeg/reader.zig");
 pub const Decoder = jpeg.Decoder;
@@ -64,9 +69,107 @@ pub fn main() !void {
                 std.process.exit(0);
             }
 
-            _ = jpeg.decode(allocator, reader) catch |err| {
+            const img = jpeg.decode(allocator, reader) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
+                return err;
             };
+
+            const bounds = img.bounds();
+            // const color_space = img.getColorSpace();
+
+            std.log.info("Got image!\nBounds: {d}x{d}", .{
+                bounds.dX(),
+                bounds.dY(),
+            });
+
+            try draw(img);
         }
+    }
+}
+
+fn draw(img: image.Image) !void {
+    if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
+        std.debug.print("Failed to initialize SDL: {s}\n", .{sdl.SDL_GetError()});
+        return;
+    }
+    defer sdl.SDL_Quit();
+
+    const window = sdl.SDL_CreateWindow(
+        "Image Viewer",
+        sdl.SDL_WINDOWPOS_CENTERED,
+        sdl.SDL_WINDOWPOS_CENTERED,
+        800,
+        600,
+        sdl.SDL_WINDOW_SHOWN,
+    );
+    if (window == null) {
+        std.debug.print("Failed to create window: {s}\n", .{sdl.SDL_GetError()});
+        return;
+    }
+    defer sdl.SDL_DestroyWindow(window);
+
+    const renderer = sdl.SDL_CreateRenderer(
+        window,
+        -1,
+        sdl.SDL_RENDERER_ACCELERATED,
+    );
+    if (renderer == null) {
+        std.debug.print("Failed to create renderer: {s}\n", .{sdl.SDL_GetError()});
+        return;
+    }
+    defer sdl.SDL_DestroyRenderer(renderer);
+
+    const bounds = img.bounds();
+    const width = bounds.dX();
+    const height = bounds.dY();
+
+    const texture = sdl.SDL_CreateTexture(
+        renderer,
+        sdl.SDL_PIXELFORMAT_RGBA32,
+        sdl.SDL_TEXTUREACCESS_STREAMING,
+        width,
+        height,
+    );
+    if (texture == null) {
+        std.debug.print("Failed to create texture: {s}\n", .{sdl.SDL_GetError()});
+        return;
+    }
+    defer sdl.SDL_DestroyTexture(texture);
+
+    var pixels: ?*anyopaque = null;
+    var pitch: i32 = 0;
+    if (sdl.SDL_LockTexture(texture, null, &pixels, &pitch) != 0) {
+        std.debug.print("Failed to lock texture: {s}\n", .{sdl.SDL_GetError()});
+        return;
+    }
+
+    const pixel_data: [*]u8 = @ptrCast(pixels);
+    for (0..@intCast(height)) |y| {
+        for (0..@intCast(width)) |x| {
+            const color = img.at(@intCast(x), @intCast(y)).rgba();
+            const pitch_u: usize = @intCast(pitch);
+            const index = (y * pitch_u + x * 4);
+            pixel_data[index + 0] = @as(u8, @intCast(color[0] >> 8)); // Red
+            pixel_data[index + 1] = @as(u8, @intCast(color[1] >> 8)); // Green
+            pixel_data[index + 2] = @as(u8, @intCast(color[2] >> 8)); // Blue
+            pixel_data[index + 3] = @as(u8, @intCast(color[3] >> 8)); // Alpha
+        }
+    }
+
+    sdl.SDL_UnlockTexture(texture);
+
+    var event: sdl.SDL_Event = undefined;
+    var running = true;
+    while (running) {
+        while (sdl.SDL_PollEvent(&event) != 0) {
+            switch (event.type) {
+                sdl.SDL_QUIT => running = false,
+                else => {},
+            }
+        }
+
+        _ = sdl.SDL_RenderClear(renderer);
+        _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
+        sdl.SDL_RenderPresent(renderer);
     }
 }

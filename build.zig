@@ -1,5 +1,6 @@
 const std = @import("std");
-pub fn build(b: *std.Build) void {
+
+pub fn build(b: *std.Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for.
     const target = b.standardTargetOptions(.{});
@@ -16,11 +17,15 @@ pub fn build(b: *std.Build) void {
     });
 
     // Dependencies
-    const zigimg_dependency = b.dependency("zigimg", .{
-        .target = target,
+    const sdl_dep = b.dependency("SDL", .{
         .optimize = optimize,
+        .target = target,
     });
-    exe.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
+    const sdl_artifact = sdl_dep.artifact("SDL2");
+    for (sdl_artifact.root_module.include_dirs.items) |include_dir| {
+        try exe.root_module.include_dirs.append(b.allocator, include_dir);
+    }
+    exe.linkLibrary(sdl_artifact);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
