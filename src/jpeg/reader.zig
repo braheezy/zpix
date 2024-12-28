@@ -347,6 +347,7 @@ fn dec(self: *Decoder, config_only: bool) !image.ImageType {
                 try self.processSos(n);
                 dbgln("SOS successfully read");
             },
+            .app0 => try self.processApp0Marker(n),
             else => {
                 if (@intFromEnum(Marker.app0) <= marker and marker <= @intFromEnum(Marker.app15) or marker == @intFromEnum(Marker.com)) {
                     try self.ignore(n);
@@ -750,6 +751,20 @@ fn processDht(self: *Decoder, n: i32) !void {
     }
 }
 
+fn processApp0Marker(self: *Decoder, n: i32) !void {
+    if (n < 5) {
+        return self.ignore(n);
+    }
+    try self.readFull(self.tmp[0..5]);
+
+    var local_n = n;
+    local_n -= 5;
+
+    self.jfif = self.tmp[0] == 'J' and self.tmp[1] == 'F' and self.tmp[2] == 'I' and self.tmp[3] == 'F' and self.tmp[4] == '\x00';
+
+    if (n > 0) return self.ignore(local_n);
+}
+
 // covered in section B.2.3.
 fn processSos(self: *Decoder, n: i32) !void {
     // dbgln("processSos");
@@ -965,7 +980,7 @@ fn processSos(self: *Decoder, n: i32) !void {
                             self.eob_run -= 1;
                         } else {
                             const huff = &self.huff[ac_table][scan[k].ta];
-                            while (zig <= zig_end) {
+                            while (zig <= zig_end) : (zig += 1) {
                                 const value = try self.decodeHuffman(huff);
                                 const val0 = value >> 4;
                                 const val1 = value & 0x0f;
@@ -1010,6 +1025,7 @@ fn processSos(self: *Decoder, n: i32) !void {
             }
 
             mcu += 1;
+
             if (self.restart_interval > 0 and @mod(mcu, self.restart_interval) == 0 and mcu < mxx * myy) {
                 try self.readFull(self.tmp[0..2]);
                 if (self.tmp[0] != 0xff or self.tmp[1] != @intFromEnum(expected_rst)) {
@@ -1280,7 +1296,10 @@ fn decodeHuffman(self: *Decoder, h: *HuffTable) !u8 {
             self.bits.n -= @intCast(n);
             self.bits.m >>= @intCast(n);
 
-            return @as(u8, @intCast(v >> 8));
+            const result = v >> 8;
+            const casted = @as(u8, @intCast(result));
+
+            return casted;
         }
     }
 

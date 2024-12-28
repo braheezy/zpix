@@ -173,6 +173,10 @@ pub const YCbCrImage = struct {
         const i_1: usize = @intCast((w * h) + (1 * cw * ch));
         const i_2: usize = @intCast((w * h) + (2 * cw * ch));
         const pixels = try al.alloc(u8, i_2);
+        // set all values to zero
+        for (pixels) |*p| {
+            p.* = 0;
+        }
 
         std.debug.print("i_0: {d}\n", .{i_0});
         std.debug.print("i_1: {d}\n", .{i_1});
@@ -261,11 +265,11 @@ pub const YCbCrImage = struct {
     pub fn cOffset(self: *YCbCrImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.c_stride);
         return switch (self.subsample_ratio) {
-            .Ratio422 => (y - self.rect.min.y) * i + (@divExact(x, 2) - @divExact(self.rect.min.x, 2)),
-            .Ratio420 => (@divExact(y, 2) - @divExact(self.rect.min.y, 2)) * i + (@divExact(x, 2) - @divExact(self.rect.min.x, 2)),
-            .Ratio440 => (@divExact(y, 2) - @divExact(self.rect.min.y, 2)) * i + (x - self.rect.min.x),
-            .Ratio411 => (y - self.rect.min.y) * i + (@divExact(x, 4) - @divExact(self.rect.min.x, 4)),
-            .Ratio410 => (@divExact(y, 2) - @divExact(self.rect.min.y, 2)) * i + (@divExact(x, 4) - @divExact(self.rect.min.x, 4)),
+            .Ratio422 => (y - self.rect.min.y) * i + (@divTrunc(x, 2) - @divTrunc(self.rect.min.x, 2)),
+            .Ratio420 => (@divTrunc(y, 2) - @divTrunc(self.rect.min.y, 2)) * i + (@divTrunc(x, 2) - @divTrunc(self.rect.min.x, 2)),
+            .Ratio440 => (@divTrunc(y, 2) - @divTrunc(self.rect.min.y, 2)) * i + (x - self.rect.min.x),
+            .Ratio411 => (y - self.rect.min.y) * i + (@divTrunc(x, 4) - @divTrunc(self.rect.min.x, 4)),
+            .Ratio410 => (@divTrunc(y, 2) - @divTrunc(self.rect.min.y, 2)) * i + (@divTrunc(x, 4) - @divTrunc(self.rect.min.x, 4)),
             // Default to 4:4:4 subsampling.
             else => (y - self.rect.min.y) * i + (x - self.rect.min.x),
         };

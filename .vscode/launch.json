@@ -8,9 +8,13 @@
       "type": "lldb",
       "request": "launch",
       "name": "Debug",
-      "program": "${workspaceFolder}/zjpeg.zig",
-      "args": ["iceberg.jpg"],
-      "cwd": "${workspaceFolder}"
+      "program": "${workspaceFolder}/zig-out/bin/zjpeg",
+      "args": [
+        "${workspaceFolder}/iceberg.jpg"
+      ],
+      "cwd": "${workspaceFolder}",
+      "internalConsoleOptions": "openOnSessionStart",
+      "preLaunchTask": "build",
     }
   ]
 }
