@@ -181,7 +181,7 @@ quant: [max_tq + 1]idct.Block,
 tmp: [2 * idct.block_size]u8 = [_]u8{0} ** (2 * idct.block_size),
 
 // TODO decode reads a JPEG image from r and returns it as an
-pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.ImageType {
     var d = Decoder{
         .al = al,
         .r = r,
@@ -191,7 +191,7 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         .quant = undefined,
         .bits = undefined,
     };
-    defer d.free();
+    // defer d.free();
     return try d.dec(false);
 }
 
@@ -239,7 +239,7 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
 }
 
 // TODO dec reads a JPEG image from r and returns it as an ??
-fn dec(self: *Decoder, config_only: bool) !image.Image {
+fn dec(self: *Decoder, config_only: bool) !image.ImageType {
     try self.readFull(self.tmp[0..2]);
     // Check for the Start of Image marker.
     if (self.tmp[0] != 0xFF or self.tmp[1] != @intFromEnum(Marker.soi)) {
@@ -362,12 +362,15 @@ fn dec(self: *Decoder, config_only: bool) !image.Image {
         }
     }
 
+    std.debug.print("dec: self.img3.?.y[0]: {d}\n", .{self.img3.?.y[0]});
+
     if (self.img1) |img| {
         return img.asImage();
     }
     if (self.img3) |_| {
         if (self.black_pixels) |_| {
-            return try self.applyBlack();
+            return error.BlackNotSupported;
+            // return try self.applyBlack();
         } else if (self.isRgb()) {
             return try self.convertToRGB();
         }
@@ -1492,7 +1495,7 @@ pub fn findRst(self: *Decoder, expected_rst: u8) !void {
     }
 }
 
-pub fn convertToRGB(self: *Decoder) !image.Image {
+pub fn convertToRGB(self: *Decoder) !image.ImageType {
     const c_scale: usize = @intCast(@divTrunc(self.comp[0].h, self.comp[1].h));
     const bounds = self.img3.?.bounds();
     const img = try image.RGBAImage.init(self.al, bounds);

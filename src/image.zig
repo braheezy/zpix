@@ -121,28 +121,8 @@ pub const RGBAImage = struct {
         };
     }
 
-    pub fn asImage(self: *RGBAImage) Image {
-        return Image{
-            .ptr = self,
-            .colorModelFn = struct {
-                fn colorModel(ptr: *anyopaque) Model {
-                    const img: *RGBAImage = @ptrCast(@alignCast(ptr));
-                    return img.colorModel();
-                }
-            }.colorModel,
-            .boundsFn = struct {
-                fn bounds(ptr: *anyopaque) Rectangle {
-                    const img: *RGBAImage = @ptrCast(@alignCast(ptr));
-                    return img.bounds();
-                }
-            }.bounds,
-            .atFn = struct {
-                fn at(ptr: *anyopaque, x: i32, y: i32) Color {
-                    const img: *RGBAImage = @ptrCast(@alignCast(ptr));
-                    return img.at(x, y);
-                }
-            }.at,
-        };
+    pub fn asImage(self: *RGBAImage) ImageType {
+        return ImageType{ .RGB = self };
     }
 };
 
@@ -187,10 +167,16 @@ pub const YCbCrImage = struct {
             std.debug.panic("image: NewYCbCr Rectangle has huge or negative dimensions", .{});
         }
 
+        std.debug.print("cw: {d}, ch: {d}\n", .{ cw, ch });
+
         const i_0: usize = @intCast((w * h) + (0 * cw * ch));
         const i_1: usize = @intCast((w * h) + (1 * cw * ch));
         const i_2: usize = @intCast((w * h) + (2 * cw * ch));
         const pixels = try al.alloc(u8, i_2);
+
+        std.debug.print("i_0: {d}\n", .{i_0});
+        std.debug.print("i_1: {d}\n", .{i_1});
+        std.debug.print("i_2: {d}\n", .{i_2});
 
         return YCbCrImage{
             .y = pixels[0..i_0],
@@ -209,6 +195,8 @@ pub const YCbCrImage = struct {
         const h = r.dY();
         var cw: i32 = 0;
         var ch: i32 = 0;
+
+        std.debug.print("subsample_ratio: {s}\n", .{@tagName(subsample_ratio)});
 
         switch (subsample_ratio) {
             .Ratio422 => {
@@ -287,7 +275,9 @@ pub const YCbCrImage = struct {
         return self.rect;
     }
     pub fn at(self: *YCbCrImage, x: i32, y: i32) Color {
+        std.debug.print("at YCbCrImage\n", .{});
         var ycbcr = self.YCbCrAt(x, y);
+        std.debug.print("here?\n", .{});
         return ycbcr.color();
     }
     pub fn colorModel(self: *YCbCrImage) Model {
@@ -296,31 +286,17 @@ pub const YCbCrImage = struct {
         return yCbCrModel.model();
     }
 
-    pub fn asImage(self: *YCbCrImage) Image {
-        return Image{
-            .ptr = self,
-            .colorModelFn = struct {
-                fn colorModel(ptr: *anyopaque) Model {
-                    const img: *YCbCrImage = @ptrCast(@alignCast(ptr));
-                    return img.colorModel();
-                }
-            }.colorModel,
-            .boundsFn = struct {
-                fn bounds(ptr: *anyopaque) Rectangle {
-                    const img: *YCbCrImage = @ptrCast(@alignCast(ptr));
-                    return img.bounds();
-                }
-            }.bounds,
-            .atFn = struct {
-                fn at(ptr: *anyopaque, x: i32, y: i32) Color {
-                    const img: *YCbCrImage = @ptrCast(@alignCast(ptr));
-                    return img.at(x, y);
-                }
-            }.at,
-        };
+    pub fn asImage(self: *YCbCrImage) ImageType {
+        // std.debug.print("YCbCrImage.asImage: self ptr = {*}\n", .{self});
+        // std.debug.print("YCbCrImage.y[0]: {d}\n", .{self.y[0]});
+
+        return ImageType{ .YCbCr = self };
     }
 
     pub fn YCbCrAt(self: *YCbCrImage, x: i32, y: i32) YCbCrColor {
+        // std.debug.print("YCbCrAt\n", .{});
+
+        // std.debug.print("1 YCbCrAt: img.y[0]: {d}\n", .{self.y[0]});
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
@@ -330,6 +306,15 @@ pub const YCbCrImage = struct {
         // Calculate offsets for Y and Cb/Cr.
         const yi: usize = @intCast(self.yOffset(x, y));
         const ci: usize = @intCast(self.cOffset(x, y));
+
+        // std.debug.print("returning ycbcr color\n", .{});
+
+        // std.debug.print("self.y.len: {d}\n", .{self.y.len});
+        // std.debug.print("self.cb.len: {d}\n", .{self.cb.len});
+        // std.debug.print("self.cr.len: {d}\n", .{self.cr.len});
+
+        // memory is bad here!
+        // std.debug.print("YCbCrAt: img.y[0]: {d}\n", .{self.y[0]});
 
         return YCbCrColor{
             .y = self.y[yi],
@@ -404,28 +389,8 @@ pub const GrayImage = struct {
         return gc.color();
     }
 
-    pub fn asImage(self: *GrayImage) Image {
-        return Image{
-            .ptr = self,
-            .colorModelFn = struct {
-                fn colorModel(ptr: *anyopaque) Model {
-                    const s: *GrayImage = @ptrCast(@alignCast(ptr));
-                    return s.colorModel();
-                }
-            }.colorModel,
-            .boundsFn = struct {
-                fn bounds(ptr: *anyopaque) Rectangle {
-                    const s: *GrayImage = @ptrCast(@alignCast(ptr));
-                    return s.bounds();
-                }
-            }.bounds,
-            .atFn = struct {
-                fn at(ptr: *anyopaque, x: i32, y: i32) Color {
-                    const s: *GrayImage = @ptrCast(@alignCast(ptr));
-                    return s.at(x, y);
-                }
-            }.at,
-        };
+    pub fn asImage(self: *GrayImage) ImageType {
+        return ImageType{ .Gray = self };
     }
 };
 
@@ -474,6 +439,12 @@ pub fn mul64(x: u64, y: u64) struct { u64, u64 } {
     return .{ hi, lo };
 }
 
+pub const ImageType = union(enum) {
+    Gray: *GrayImage,
+    YCbCr: *YCbCrImage,
+    RGB: *RGBAImage,
+};
+
 pub const Image = struct {
     ptr: *anyopaque,
     colorModelFn: *const fn (ptr: *anyopaque) Model,
@@ -489,6 +460,7 @@ pub const Image = struct {
     }
 
     pub fn at(self: *const Image, x: i32, y: i32) Color {
+        std.debug.print("at\n", .{});
         return self.atFn(self.ptr, x, y);
     }
 
@@ -679,6 +651,7 @@ const YCbCrColor = struct {
     cr: u8 = 0,
 
     pub fn color(self: *YCbCrColor) Color {
+        std.debug.print("YCbCrColor.color\n", .{});
         return Color.init(self, rgba);
     }
 

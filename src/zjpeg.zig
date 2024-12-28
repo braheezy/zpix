@@ -74,20 +74,27 @@ pub fn main() !void {
                 return err;
             };
 
-            const bounds = img.bounds();
-            // const color_space = img.getColorSpace();
+            // print("****************\n", .{});
 
-            std.log.info("Got image!\nBounds: {d}x{d}", .{
-                bounds.dX(),
-                bounds.dY(),
-            });
+            // switch (img) {
+            //     .YCbCr => |i| std.debug.print("i.y[0]: {d}\n", .{i.y[0]}),
+            //     else => return error.NotReadyYet,
+            // }
 
-            try draw(img);
+            const pixels = dumpPixels(allocator, img);
+
+            switch (img) {
+                .YCbCr => |i| {
+                    try dumpPixelsToFile(pixels, i.bounds().dX(), i.bounds().dY());
+                    try draw(pixels, i.bounds().dX(), i.bounds().dY());
+                },
+                else => return error.NotReadyYet,
+            }
         }
     }
 }
 
-fn draw(img: image.Image) !void {
+fn draw(pixels: []u8, width: i32, height: i32) !void {
     if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
         std.debug.print("Failed to initialize SDL: {s}\n", .{sdl.SDL_GetError()});
         return;
@@ -98,8 +105,8 @@ fn draw(img: image.Image) !void {
         "Image Viewer",
         sdl.SDL_WINDOWPOS_CENTERED,
         sdl.SDL_WINDOWPOS_CENTERED,
-        800,
-        600,
+        @intCast(width),
+        @intCast(height),
         sdl.SDL_WINDOW_SHOWN,
     );
     if (window == null) {
@@ -111,7 +118,7 @@ fn draw(img: image.Image) !void {
     const renderer = sdl.SDL_CreateRenderer(
         window,
         -1,
-        sdl.SDL_RENDERER_ACCELERATED,
+        sdl.SDL_RENDERER_ACCELERATED | sdl.SDL_RENDERER_PRESENTVSYNC,
     );
     if (renderer == null) {
         std.debug.print("Failed to create renderer: {s}\n", .{sdl.SDL_GetError()});
@@ -119,16 +126,12 @@ fn draw(img: image.Image) !void {
     }
     defer sdl.SDL_DestroyRenderer(renderer);
 
-    const bounds = img.bounds();
-    const width = bounds.dX();
-    const height = bounds.dY();
-
     const texture = sdl.SDL_CreateTexture(
         renderer,
         sdl.SDL_PIXELFORMAT_RGBA32,
         sdl.SDL_TEXTUREACCESS_STREAMING,
-        width,
-        height,
+        @intCast(width),
+        @intCast(height),
     );
     if (texture == null) {
         std.debug.print("Failed to create texture: {s}\n", .{sdl.SDL_GetError()});
@@ -136,23 +139,29 @@ fn draw(img: image.Image) !void {
     }
     defer sdl.SDL_DestroyTexture(texture);
 
-    var pixels: ?*anyopaque = null;
+    var tex_pixels: ?*anyopaque = null;
     var pitch: i32 = 0;
-    if (sdl.SDL_LockTexture(texture, null, &pixels, &pitch) != 0) {
+    if (sdl.SDL_LockTexture(texture, null, &tex_pixels, &pitch) != 0) {
         std.debug.print("Failed to lock texture: {s}\n", .{sdl.SDL_GetError()});
         return;
     }
 
-    const pixel_data: [*]u8 = @ptrCast(pixels);
+    const tex_data: [*]u8 = @ptrCast(tex_pixels);
+    const row_length = @as(usize, @intCast(pitch));
+    const pixel_stride = 4; // RGBA is 4 bytes per pixel
+
     for (0..@intCast(height)) |y| {
+        const src_row_start = y * @as(usize, @intCast(width)) * pixel_stride;
+        const dst_row_start = y * row_length;
+
         for (0..@intCast(width)) |x| {
-            const color = img.at(@intCast(x), @intCast(y)).rgba();
-            const pitch_u: usize = @intCast(pitch);
-            const index = (y * pitch_u + x * 4);
-            pixel_data[index + 0] = @as(u8, @intCast(color[0] >> 8)); // Red
-            pixel_data[index + 1] = @as(u8, @intCast(color[1] >> 8)); // Green
-            pixel_data[index + 2] = @as(u8, @intCast(color[2] >> 8)); // Blue
-            pixel_data[index + 3] = @as(u8, @intCast(color[3] >> 8)); // Alpha
+            const src_index = src_row_start + (x * pixel_stride);
+            const dst_index = dst_row_start + (x * pixel_stride);
+
+            tex_data[dst_index + 0] = pixels[src_index + 0]; // Red
+            tex_data[dst_index + 1] = pixels[src_index + 1]; // Green
+            tex_data[dst_index + 2] = pixels[src_index + 2]; // Blue
+            tex_data[dst_index + 3] = pixels[src_index + 3]; // Alpha
         }
     }
 
@@ -172,4 +181,61 @@ fn draw(img: image.Image) !void {
         _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
         sdl.SDL_RenderPresent(renderer);
     }
+}
+
+fn dumpPixelsToFile(pixels: []u8, width: i32, height: i32) !void {
+    const pixel_file = try std.fs.cwd().createFile("pixel_dump.zig.raw", .{});
+    defer pixel_file.close();
+
+    var writer = pixel_file.writer();
+    const pixel_stride = 4; // 4 bytes per pixel (RGBA format)
+
+    outer: for (0..@intCast(height)) |y| {
+        const row_start = y * @as(usize, @intCast(width)) * pixel_stride;
+
+        for (0..@intCast(width)) |x| {
+            const index = row_start + (x * pixel_stride);
+            if (index == pixels.len) {
+                break :outer;
+            }
+
+            try writer.writeAll(&[_]u8{
+                pixels[index + 0], // Red
+                pixels[index + 1], // Green
+                pixels[index + 2], // Blue
+                pixels[index + 3], // Alpha
+            });
+        }
+    }
+
+    std.log.info("Pixel data written to 'pixel_dump.zig.raw'", .{});
+}
+
+pub fn dumpPixels(allocator: std.mem.Allocator, img: image.ImageType) []u8 {
+    // print("dumpPixels\n", .{});
+    var pixelBuffer: []u8 = undefined;
+    switch (img) {
+        .YCbCr => |ycbcr| {
+            // std.debug.print("dumpPixels: YCbCr ptr = {*}\n", .{ycbcr});
+
+            const width: usize = @intCast(ycbcr.rect.max.x);
+            const height: usize = @intCast(ycbcr.rect.max.y);
+            const size: usize = @intCast(width * height * 3); // Y, Cb, Cr
+            pixelBuffer = allocator.alloc(u8, size) catch unreachable;
+
+            var index: usize = 0;
+            for (0..height) |y| {
+                for (0..width) |x| {
+                    const color = ycbcr.YCbCrAt(@intCast(x), @intCast(y));
+                    pixelBuffer[index + 0] = color.y;
+                    pixelBuffer[index + 1] = color.cb;
+                    pixelBuffer[index + 2] = color.cr;
+                    index += 3;
+                }
+            }
+        },
+        else => @panic("Unsupported image type for dumping pixels"),
+    }
+
+    return pixelBuffer;
 }
