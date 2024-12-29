@@ -1,12 +1,52 @@
+//! idct provides an implementation of the Inverse Discrete Cosine Transform
+//! This is a Zig translation of the Go translation of idct.c from
+//!
+//! http://standards.iso.org/ittf/PubliclyAvailableStandards/ISO_IEC_13818-4_2004_Conformance_Testing/Video/verifier/mpeg2decode_960109.tar.gz
+//
+// which carries the following notice:
+//
+//* Copyright (C) 1996, MPEG Software Simulation Group. All Rights Reserved. */
+//*
+//* Disclaimer of Warranty
+//*
+//* These software programs are available to the user without any license fee or
+//* royalty on an "as is" basis.  The MPEG Software Simulation Group disclaims
+//* any and all warranties, whether express, implied, or statuary, including any
+//* implied warranties or merchantability or of fitness for a particular
+//* purpose.  In no event shall the copyright-holder be liable for any
+//* incidental, punitive, or consequential damages of any kind whatsoever
+//* arising from the use of these programs.
+//*
+//* This disclaimer of warranty extends to the user of these programs and user's
+//* customers, employees, agents, transferees, successors, and assigns.
+//*
+//* The MPEG Software Simulation Group does not represent or warrant that the
+//* programs furnished hereunder are free of infringement of any third-party
+//* patents.
+//*
+//* Commercial implementations of MPEG-1 and MPEG-2 video, including shareware,
+//* are subject to royalty fees to patent holders.  Many of these patents are
+//* general enough such that they are unavoidable regardless of implementation
+//* design.
+//*
+
+/// A DCT, or Discrete Cosine Transform, block is 8x8.
 pub const block_size = 64;
 
+/// In JPEG, the DCT is used to compress the image by transforming the pixel data
+/// into a frequency domain. The IDCT, or Inverse Discrete Cosine Transform, is
+/// used to transform the compressed data back into pixel data.
 pub const Block = [block_size]i32;
 
+/// emptyBlock returns an empty block of 64 zeros.
+/// Ensures clean block instead of one with possible garbage values.
 pub fn emptyBlock() Block {
     // This is a block of all zeros
     return [_]i32{0} ** block_size;
 }
 
+/// The following constants are derived from the standard JPEG quantization
+/// table, Section A.3.3. They are scaled by 2048 because we use a fixed-point
 const w1 = 2841; // 2048*sqrt(2)*cos(1*pi/16)
 const w2 = 2676; // 2048*sqrt(2)*cos(2*pi/16)
 const w3 = 2408; // 2048*sqrt(2)*cos(3*pi/16)
@@ -21,7 +61,8 @@ const w2mw6 = w2 - w6;
 const w3pw5 = w3 + w5;
 const w3mw5 = w3 - w5;
 
-const r2 = 181; // 256/sqrt(2)
+// 256/sqrt(2)
+const r2 = 181;
 
 /// Performs a 2-D Inverse Discrete Cosine Transformation.
 ///

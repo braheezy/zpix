@@ -291,16 +291,10 @@ pub const YCbCrImage = struct {
     }
 
     pub fn asImage(self: *YCbCrImage) ImageType {
-        // std.debug.print("YCbCrImage.asImage: self ptr = {*}\n", .{self});
-        // std.debug.print("YCbCrImage.y[0]: {d}\n", .{self.y[0]});
-
         return ImageType{ .YCbCr = self };
     }
 
     pub fn YCbCrAt(self: *YCbCrImage, x: i32, y: i32) YCbCrColor {
-        // std.debug.print("YCbCrAt\n", .{});
-
-        // std.debug.print("1 YCbCrAt: img.y[0]: {d}\n", .{self.y[0]});
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
@@ -310,15 +304,6 @@ pub const YCbCrImage = struct {
         // Calculate offsets for Y and Cb/Cr.
         const yi: usize = @intCast(self.yOffset(x, y));
         const ci: usize = @intCast(self.cOffset(x, y));
-
-        // std.debug.print("returning ycbcr color\n", .{});
-
-        // std.debug.print("self.y.len: {d}\n", .{self.y.len});
-        // std.debug.print("self.cb.len: {d}\n", .{self.cb.len});
-        // std.debug.print("self.cr.len: {d}\n", .{self.cr.len});
-
-        // memory is bad here!
-        // std.debug.print("YCbCrAt: img.y[0]: {d}\n", .{self.y[0]});
 
         return YCbCrColor{
             .y = self.y[yi],
@@ -467,22 +452,6 @@ pub const Image = struct {
         std.debug.print("at\n", .{});
         return self.atFn(self.ptr, x, y);
     }
-
-    // pub fn getColorSpace(self: *const Image) []const u8 {
-    //     if (@as(*RGBAImage, @ptrCast(@alignCast(self.ptr)))) |_| {
-    //         return "RGBA";
-    //     } else if (@as(*YCbCrImage, self.ptr)) |_| {
-    //         return "YCbCr";
-    //     } else if (@as(*GrayImage, self.ptr)) |_| {
-    //         return "Grayscale";
-    //     }
-    //     // else if (@as(*CMYKImage, self.ptr)) |_| {
-    //     //     return "CMYK";
-    //     // }
-    //     else {
-    //         return "Unknown";
-    //     }
-    // }
 };
 
 // #################################
@@ -729,11 +698,7 @@ pub const YCbCrModel = struct {
     }
 
     pub fn convert(_: *const YCbCrModel, c: Color) Color {
-        // const rgba = c.rgbaFn(c.ptr);
         const r, const g, const b, _ = c.rgbaFn(c.ptr);
-        // const r = rgba[0];
-        // const g = rgba[1];
-        // const b = rgba[2];
 
         const yuv = rgbToYCbCr(@intCast(r >> 8), @intCast(g), @intCast(b));
         var ycbcr = YCbCrColor{

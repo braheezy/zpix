@@ -1,8 +1,3 @@
-//! Checks that the basename of the given path matches a string.
-//!
-//! Usage:
-//!
-
 const std = @import("std");
 const image = @import("image.zig");
 
@@ -10,7 +5,7 @@ const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-pub const jpeg = @import("jpeg/reader.zig");
+pub const jpeg = @import("jpeg/decoder.zig");
 pub const Decoder = jpeg.Decoder;
 
 const print = std.debug.print;
@@ -74,18 +69,8 @@ pub fn main() !void {
                 return err;
             };
 
-            // print("****************\n", .{});
-
-            // switch (img) {
-            //     .YCbCr => |i| std.debug.print("i.y[0]: {d}\n", .{i.y[0]}),
-            //     else => return error.NotReadyYet,
-            // }
-
-            // const pixels = dumpPixels(allocator, img);
-
             switch (img) {
                 .YCbCr => |i| {
-                    // try dumpImgPixelsToFile(img);
                     try draw(i);
                 },
                 else => return error.NotReadyYet,
@@ -101,12 +86,16 @@ fn draw(img: *image.YCbCrImage) !void {
     }
     defer sdl.SDL_Quit();
 
+    const width = img.bounds().dX();
+    const height = img.bounds().dY();
+    const scale_factor = 4;
+
     const window = sdl.SDL_CreateWindow(
         "Image Viewer",
         sdl.SDL_WINDOWPOS_CENTERED,
         sdl.SDL_WINDOWPOS_CENTERED,
-        @intCast(2048),
-        @intCast(2048),
+        @intCast(@divTrunc(width, scale_factor)),
+        @intCast(@divTrunc(height, scale_factor)),
         sdl.SDL_WINDOW_SHOWN,
     );
     if (window == null) {
@@ -130,8 +119,8 @@ fn draw(img: *image.YCbCrImage) !void {
         renderer,
         sdl.SDL_PIXELFORMAT_RGBA32,
         sdl.SDL_TEXTUREACCESS_STREAMING,
-        @intCast(2048),
-        @intCast(2048),
+        @intCast(width),
+        @intCast(height),
     );
     if (texture == null) {
         std.debug.print("Failed to create texture: {s}\n", .{sdl.SDL_GetError()});
@@ -185,94 +174,4 @@ fn draw(img: *image.YCbCrImage) !void {
         _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
         sdl.SDL_RenderPresent(renderer);
     }
-}
-
-fn dumpImgPixelsToFile(img: image.ImageType) !void {
-    const pixel_file = try std.fs.cwd().createFile("pixel_dump.zig.raw", .{});
-    defer pixel_file.close();
-
-    var writer = pixel_file.writer();
-    switch (img) {
-        .YCbCr => |ycbcr| {
-            // std.debug.print("dumpPixels: YCbCr ptr = {*}\n", .{ycbcr});
-            print("dumping {d} x {d} pixels\n", .{ ycbcr.bounds().dX(), ycbcr.bounds().dY() });
-
-            var y = ycbcr.bounds().min.y;
-
-            while (y < ycbcr.bounds().max.y) : (y += 1) {
-                var x = ycbcr.bounds().min.x;
-                while (x < ycbcr.bounds().max.x) : (x += 1) {
-                    var color = ycbcr.YCbCrAt(x, y);
-                    const r, const g, const b, const a = color.rgba();
-                    try writer.writeAll(&[_]u8{
-                        @intCast(r >> 8),
-                        @intCast(g >> 8),
-                        @intCast(b >> 8),
-                        @intCast(a >> 8),
-                    });
-                }
-            }
-        },
-        else => @panic("Unsupported image type for dumping pixels"),
-    }
-
-    std.log.info("Pixel data written to 'pixel_dump.zig.raw'", .{});
-}
-
-fn dumpPixelsToFile(pixels: []u8, width: i32, height: i32) !void {
-    const pixel_file = try std.fs.cwd().createFile("pixel_dump.zig.raw", .{});
-    defer pixel_file.close();
-
-    var writer = pixel_file.writer();
-    const pixel_stride = 4; // 4 bytes per pixel (RGBA format)
-
-    outer: for (0..@intCast(height)) |y| {
-        const row_start = y * @as(usize, @intCast(width)) * pixel_stride;
-
-        for (0..@intCast(width)) |x| {
-            const index = row_start + (x * pixel_stride);
-            if (index == pixels.len) {
-                break :outer;
-            }
-
-            try writer.writeAll(&[_]u8{
-                pixels[index + 0], // Red
-                pixels[index + 1], // Green
-                pixels[index + 2], // Blue
-                pixels[index + 3], // Alpha
-            });
-        }
-    }
-
-    std.log.info("Pixel data written to 'pixel_dump.zig.raw'", .{});
-}
-
-pub fn dumpPixels(allocator: std.mem.Allocator, img: image.ImageType) []u8 {
-    // print("dumpPixels\n", .{});
-    var pixelBuffer: []u8 = undefined;
-    switch (img) {
-        .YCbCr => |ycbcr| {
-            // std.debug.print("dumpPixels: YCbCr ptr = {*}\n", .{ycbcr});
-
-            const width: usize = @intCast(ycbcr.rect.max.x);
-            const height: usize = @intCast(ycbcr.rect.max.y);
-            const size: usize = @intCast(width * height * 3); // Y, Cb, Cr
-            pixelBuffer = allocator.alloc(u8, size) catch unreachable;
-
-            var index: usize = 0;
-            for (0..height) |y| {
-                for (0..width) |x| {
-                    const color = ycbcr.YCbCrAt(@intCast(x), @intCast(y));
-                    pixelBuffer[index + 0] = color.y;
-                    pixelBuffer[index + 1] = color.cb;
-                    pixelBuffer[index + 2] = color.cr;
-
-                    index += 3;
-                }
-            }
-        },
-        else => @panic("Unsupported image type for dumping pixels"),
-    }
-
-    return pixelBuffer;
 }
