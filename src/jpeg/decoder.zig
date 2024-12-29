@@ -164,12 +164,6 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.ImageType {
     return try d.decodeInner(false);
 }
 
-pub fn free(self: *Decoder) void {
-    if (self.img3) |img| {
-        self.al.free(img.pixels);
-    }
-}
-
 pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
     var d = Decoder{
         .al = undefined,
@@ -195,9 +189,13 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
                 .color_model = m.model(),
             };
         },
-        3 => image.Config{
-            .width = d.width,
-            .height = d.height,
+        3 => {
+            var m = image.YCbCrModel.init();
+            return image.Config{
+                .width = d.width,
+                .height = d.height,
+                .color_model = m.model(),
+            };
         },
         4 => image.Config{
             .width = d.width,
@@ -209,14 +207,13 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
 
 fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
     try self.readFull(self.tmp[0..2]);
+
     // Check for the Start of Image marker.
     if (self.tmp[0] != 0xFF or self.tmp[1] != @intFromEnum(Marker.soi)) {
-        std.debug.print("{x} {x}\n", .{ self.tmp[0], self.tmp[1] });
         return error.InvalidSOIMarker;
-    } else {
-        std.log.info("SOI successfully read", .{});
     }
 
+    // Process the remaining segments until the End Of Image marker.
     while (true) {
         try self.readFull(self.tmp[0..2]);
         while (self.tmp[0] != 0xff) {
@@ -257,7 +254,6 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
         }
         if (marker == @intFromEnum(Marker.eoi)) {
             // Done!
-            // dbgln("EOI successfully read");
             break;
         }
         if (@intFromEnum(Marker.rst0) <= marker and marker <= @intFromEnum(Marker.rst7)) {
@@ -285,7 +281,6 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
                 self.baseline = marker_enum == Marker.sof0;
                 self.progressive = marker_enum == Marker.sof2;
                 try self.processSof(n);
-                // dbgln("SOF successfully read");
                 if (config_only and self.jfif) {
                     return error.ConfigOnly;
                 }
@@ -293,19 +288,15 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
             .dqt => {
                 if (config_only) {
                     try self.ignore(n);
-                    // dbgln("ignored dqt");
                 } else {
                     try self.processDqt(n);
-                    // dbgln("DQT successfully read");
                 }
             },
             .dht => {
                 if (config_only) {
                     try self.ignore(n);
-                    // dbgln("ignored dht");
                 } else {
                     try self.processDht(n);
-                    // dbgln("DHT successfully read");
                 }
             },
             .sos => {
@@ -313,33 +304,34 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
                     return error.ConfigOnly;
                 }
                 try self.processSos(n);
-                // dbgln("SOS successfully read");
             },
             .app0 => try self.processApp0Marker(n),
+            .app14 => try self.processApp14Marker(n),
             else => {
                 if (@intFromEnum(Marker.app0) <= marker and marker <= @intFromEnum(Marker.app15) or marker == @intFromEnum(Marker.com)) {
                     try self.ignore(n);
-                    // dbgln("ignored appX");
                 } else if (marker < 0xc0) {
                     // See Table B.1 "Marker code assignments".
                     return error.UnknownMarker;
                 } else {
-                    // dbg("unsupported marker: {x}\n", .{marker});
-                    return error.Marker;
+                    return error.UnsupportedMarker;
                 }
             },
         }
     }
 
-    std.debug.print("dec: self.img3.?.y[0]: {d}\n", .{self.img3.?.y[0]});
+    if (self.progressive) {
+        // try self.reconstructProgressiveImage();
+        return error.ProgressiveNotSupported;
+    }
 
     if (self.img1) |img| {
         return img.asImage();
     }
     if (self.img3) |_| {
         if (self.black_pixels) |_| {
-            return error.BlackNotSupported;
             // return try self.applyBlack();
+            return error.BlackNotSupported;
         } else if (self.isRgb()) {
             return try self.convertToRGB();
         }
@@ -360,12 +352,12 @@ fn ignore(self: *Decoder, n: i32) !void {
     }
 
     while (true) {
-        var m = self.bytes.j - self.bytes.i;
-        if (m > local_n) {
-            m = @intCast(local_n);
+        var remaining_bytes = self.bytes.j - self.bytes.i;
+        if (remaining_bytes > local_n) {
+            remaining_bytes = @intCast(local_n);
         }
-        self.bytes.i += m;
-        local_n -= @intCast(m);
+        self.bytes.i += remaining_bytes;
+        local_n -= @intCast(remaining_bytes);
         if (local_n == 0) {
             break;
         }
@@ -418,15 +410,16 @@ fn readFull(self: *Decoder, p: []u8) !void {
     }
 }
 
-// fill fills up the d.bytes.buf buffer from the underlying io.Reader. It
-// should only be called when there are no unread bytes in d.bytes.
+// fill fills up the self.bytes.buffer from the underlying reader. It
+// should only be called when there are no unread bytes in self.bytes.
 fn fill(self: *Decoder) !void {
     // Ensure all bytes have been read before refilling.
     if (self.bytes.i != self.bytes.j) {
-        @panic("Decoder.fill called when unread bytes exist");
+        @panic("Decoder.fill() called when unread bytes exist");
     }
 
-    // Preserve the last two bytes for potential unread operations.
+    // Move the last 2 bytes to the start of the buffer, in case we need
+    // to call unreadByteStuffedByte.
     if (self.bytes.j > 2) {
         self.bytes.buffer[0] = self.bytes.buffer[self.bytes.j - 2];
         self.bytes.buffer[1] = self.bytes.buffer[self.bytes.j - 1];
@@ -442,12 +435,12 @@ fn fill(self: *Decoder) !void {
     self.bytes.j += n;
 
     if (n == 0) {
-        return error.UnexpectedEOF;
+        return error.UnexpectedEof;
     }
 }
 
 // unreadByteStuffedByte undoes the most recent readByteStuffedByte call,
-// giving a byte of data back from d.bits to d.bytes. The Huffman look-up table
+// giving a byte of data back from self.bits to sekf.bytes. The Huffman look-up table
 // requires at least 8 bits for look-up, which means that Huffman decoding can
 // sometimes overshoot and read one or two too many bytes. Two-byte overshoot
 // can happen when expecting to read a 0xff 0x00 byte-stuffed byte.
@@ -509,9 +502,9 @@ fn processSof(self: *Decoder, n: i32) !void {
             return error.BadTqValue;
         }
 
-        const hv = self.tmp[7 + 3 * i];
-        var h = hv >> 4;
-        var v = hv & 0x0f;
+        const hv_sampling = self.tmp[7 + 3 * i];
+        var h = hv_sampling >> 4;
+        var v = hv_sampling & 0x0f;
         if (h < 1 or 4 < h or v < 1 or 4 < v) {
             return error.LumaChromaSubSamplingRatio;
         }
@@ -578,8 +571,8 @@ fn processSof(self: *Decoder, n: i32) !void {
                 //	  vertically.
                 //	- for YCbCrK, the Y and K channels have full samples.
                 switch (i) {
-                    0 => if (hv != 0x11 and hv != 0x22) return error.LumaChromaSubSamplingRatio,
-                    1, 2 => if (hv != 0x11) return error.LumaChromaSubSamplingRatio,
+                    0 => if (hv_sampling != 0x11 and hv_sampling != 0x22) return error.LumaChromaSubSamplingRatio,
+                    1, 2 => if (hv_sampling != 0x11) return error.LumaChromaSubSamplingRatio,
                     3 => if (self.component[0].h != h or self.component[0].v != v) return error.LumaChromaSubSamplingRatio,
                     else => return error.NumberComponents,
                 }
@@ -597,12 +590,12 @@ fn processDqt(self: *Decoder, n: i32) !void {
     var local_n = n;
     loop: while (local_n > 0) {
         local_n -= 1;
-        const x = try self.readByte();
-        const tq = x & 0x0f;
+        const quant_info = try self.readByte();
+        const tq = quant_info & 0x0f;
         if (tq > max_tq) {
             return error.BadTqValue;
         }
-        switch (x >> 4) {
+        switch (quant_info >> 4) {
             0 => {
                 if (local_n < idct.block_size) {
                     return error.BadPqValue;
@@ -642,6 +635,23 @@ fn processApp0Marker(self: *Decoder, n: i32) !void {
     local_n -= 5;
 
     self.jfif = self.tmp[0] == 'J' and self.tmp[1] == 'F' and self.tmp[2] == 'I' and self.tmp[3] == 'F' and self.tmp[4] == '\x00';
+
+    if (n > 0) return self.ignore(local_n);
+}
+
+fn processApp14Marker(self: *Decoder, n: i32) !void {
+    if (n < 12) {
+        return self.ignore(n);
+    }
+    try self.readFull(self.tmp[0..12]);
+
+    var local_n = n;
+    local_n -= 12;
+
+    if (self.tmp[0] == 'A' and self.tmp[1] == 'd' and self.tmp[2] == 'o' and self.tmp[3] == 'b' and self.tmp[4] == 'e') {
+        self.adobe_transform_valid = true;
+        self.adobe_transform = @enumFromInt(self.tmp[11]);
+    }
 
     if (n > 0) return self.ignore(local_n);
 }

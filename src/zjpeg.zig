@@ -37,15 +37,15 @@ pub fn main() !void {
         // EX_USAGE: command line usage error
         std.process.exit(64);
     }
-    var isConfigOnlyFlag: bool = false;
+    // var isConfigOnlyFlag: bool = false;
 
     // handle CLI arguments
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.print(helpText, .{});
             std.process.exit(0);
-        } else if (std.mem.eql(u8, arg, "--config-only") or std.mem.eql(u8, arg, "-c")) {
-            isConfigOnlyFlag = true;
+            // } else if (std.mem.eql(u8, arg, "--config-only") or std.mem.eql(u8, arg, "-c")) {
+            //     isConfigOnlyFlag = true;
         } else {
             // assume input file
             const jpeg_file = std.fs.cwd().openFile(arg, .{}) catch |err| {
@@ -58,16 +58,17 @@ pub fn main() !void {
             var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
             const reader = bufferedReader.reader().any();
 
-            if (isConfigOnlyFlag) {
-                const img_config = try jpeg.decodeConfig(reader);
-                print("Image config: {any}\n", .{img_config});
-                std.process.exit(0);
-            }
+            // if (isConfigOnlyFlag) {
+            //     const img_config = try jpeg.decodeConfig(reader);
+            //     print("Image config: {any}\n", .{img_config});
+            //     std.process.exit(0);
+            // }
 
             const img = jpeg.decode(allocator, reader) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
                 return err;
             };
+            defer img.free(allocator);
 
             switch (img) {
                 .YCbCr => |i| {
@@ -79,7 +80,7 @@ pub fn main() !void {
     }
 }
 
-fn draw(img: *image.YCbCrImage) !void {
+fn draw(img: image.YCbCrImage) !void {
     if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
         std.debug.print("Failed to initialize SDL: {s}\n", .{sdl.SDL_GetError()});
         return;
@@ -137,8 +138,8 @@ fn draw(img: *image.YCbCrImage) !void {
 
     const tex_data: [*]u8 = @ptrCast(tex_pixels);
     const row_length = @as(usize, @intCast(pitch));
-    const pixel_stride = 4; // RGBA is 4 bytes per pixel
-    // print("pixels len: {d}\n", .{pixels.len});
+    // RGBA is 4 bytes per pixel
+    const pixel_stride = 4;
 
     var y = img.bounds().min.y;
     while (y < img.bounds().max.y) : (y += 1) {

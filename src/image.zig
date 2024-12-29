@@ -121,7 +121,7 @@ pub const RGBAImage = struct {
         };
     }
 
-    pub fn asImage(self: *RGBAImage) ImageType {
+    pub fn asImage(self: RGBAImage) ImageType {
         return ImageType{ .RGB = self };
     }
 };
@@ -167,8 +167,6 @@ pub const YCbCrImage = struct {
             std.debug.panic("image: NewYCbCr Rectangle has huge or negative dimensions", .{});
         }
 
-        std.debug.print("cw: {d}, ch: {d}\n", .{ cw, ch });
-
         const i_0: usize = @intCast((w * h) + (0 * cw * ch));
         const i_1: usize = @intCast((w * h) + (1 * cw * ch));
         const i_2: usize = @intCast((w * h) + (2 * cw * ch));
@@ -177,10 +175,6 @@ pub const YCbCrImage = struct {
         for (pixels) |*p| {
             p.* = 0;
         }
-
-        std.debug.print("i_0: {d}\n", .{i_0});
-        std.debug.print("i_1: {d}\n", .{i_1});
-        std.debug.print("i_2: {d}\n", .{i_2});
 
         return YCbCrImage{
             .y = pixels[0..i_0],
@@ -199,8 +193,6 @@ pub const YCbCrImage = struct {
         const h = r.dY();
         var cw: i32 = 0;
         var ch: i32 = 0;
-
-        std.debug.print("subsample_ratio: {s}\n", .{@tagName(subsample_ratio)});
 
         switch (subsample_ratio) {
             .Ratio422 => {
@@ -255,14 +247,14 @@ pub const YCbCrImage = struct {
 
     // YOffset returns the index of the first element of Y that corresponds to
     // the pixel at (x, y).
-    pub fn yOffset(self: *YCbCrImage, x: i32, y: i32) i32 {
+    pub fn yOffset(self: YCbCrImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.y_stride);
         return (y - self.rect.min.y) * i + (x - self.rect.min.x);
     }
 
     // COffset returns the index of the first element of Cb or Cr that corresponds
     // to the pixel at (x, y).
-    pub fn cOffset(self: *YCbCrImage, x: i32, y: i32) i32 {
+    pub fn cOffset(self: YCbCrImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.c_stride);
         return switch (self.subsample_ratio) {
             .Ratio422 => (y - self.rect.min.y) * i + (@divTrunc(x, 2) - @divTrunc(self.rect.min.x, 2)),
@@ -275,7 +267,7 @@ pub const YCbCrImage = struct {
         };
     }
 
-    pub fn bounds(self: *YCbCrImage) Rectangle {
+    pub fn bounds(self: YCbCrImage) Rectangle {
         return self.rect;
     }
     pub fn at(self: *YCbCrImage, x: i32, y: i32) Color {
@@ -290,11 +282,11 @@ pub const YCbCrImage = struct {
         return yCbCrModel.model();
     }
 
-    pub fn asImage(self: *YCbCrImage) ImageType {
+    pub fn asImage(self: YCbCrImage) ImageType {
         return ImageType{ .YCbCr = self };
     }
 
-    pub fn YCbCrAt(self: *YCbCrImage, x: i32, y: i32) YCbCrColor {
+    pub fn YCbCrAt(self: YCbCrImage, x: i32, y: i32) YCbCrColor {
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
@@ -378,7 +370,7 @@ pub const GrayImage = struct {
         return gc.color();
     }
 
-    pub fn asImage(self: *GrayImage) ImageType {
+    pub fn asImage(self: GrayImage) ImageType {
         return ImageType{ .Gray = self };
     }
 };
@@ -429,9 +421,17 @@ pub fn mul64(x: u64, y: u64) struct { u64, u64 } {
 }
 
 pub const ImageType = union(enum) {
-    Gray: *GrayImage,
-    YCbCr: *YCbCrImage,
-    RGB: *RGBAImage,
+    Gray: GrayImage,
+    YCbCr: YCbCrImage,
+    RGB: RGBAImage,
+
+    pub fn free(self: ImageType, al: std.mem.Allocator) void {
+        switch (self) {
+            .Gray => {},
+            .YCbCr => al.free(self.YCbCr.pixels),
+            .RGB => {},
+        }
+    }
 };
 
 pub const Image = struct {
@@ -693,8 +693,9 @@ const YCbCrColor = struct {
 };
 
 pub const YCbCrModel = struct {
-    pub fn init() YCbCrModel {
-        return YCbCrModel{};
+    pub fn init() *YCbCrModel {
+        var yCbCrModel = YCbCrModel{};
+        return &yCbCrModel;
     }
 
     pub fn convert(_: *const YCbCrModel, c: Color) Color {
