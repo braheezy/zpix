@@ -12,22 +12,7 @@ pub fn drawYCbCr(
     rect: image.Rectangle,
     src: *image.YCbCrImage,
     sp: image.Point,
-) !void {
-    // This function exists in the image/internal/imageutil package because it
-    // is needed by both the image/draw and image/jpeg packages, but it doesn't
-    // seem right for one of those two to depend on the other.
-    //
-    // Another option is to have this code be exported in the image package,
-    // but we'd need to make sure we're totally happy with the API (for the
-    // rest of Go 1 compatibility), and decide if we want to have a more
-    // general purpose DrawToRGBA method for other image types. One possibility
-    // is:
-    //
-    // func (src *YCbCr) CopyToRGBA(dst *RGBA, dr, sr Rectangle) (effectiveDr, effectiveSr Rectangle)
-    //
-    // in the spirit of the built-in copy function for 1-dimensional slices,
-    // that also allowed a CopyFromRGBA method if needed.
-
+) !bool {
     const x0 = (rect.min.x - dst.rect.min.x) * 4;
     const x1: usize = @intCast((rect.max.x - dst.rect.min.x) * 4);
     const y0: usize = @intCast(rect.min.y - dst.rect.min.y);
@@ -300,7 +285,7 @@ pub fn drawYCbCr(
                 }
             }
         },
-        else => return error.SubsampleNotSupported,
+        else => return false,
     }
-    return;
+    return true;
 }

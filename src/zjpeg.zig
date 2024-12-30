@@ -146,16 +146,16 @@ fn draw(img: image.YCbCrImage) !void {
         var x = img.bounds().min.x;
         while (x < img.bounds().max.x) : (x += 1) {
             var color = img.YCbCrAt(x, y);
-            const r, const g, const b, const a = color.rgba();
+            const r, const g, const b, const a = color.toRGBA();
 
             const row_offset = @as(usize, @intCast(y - img.bounds().min.y)) * row_length;
             const col_offset = @as(usize, @intCast(x - img.bounds().min.x)) * pixel_stride;
             const dst_index = row_offset + col_offset;
 
-            tex_data[dst_index + 0] = @intCast(r >> 8);
-            tex_data[dst_index + 1] = @intCast(g >> 8);
-            tex_data[dst_index + 2] = @intCast(b >> 8);
-            tex_data[dst_index + 3] = @intCast(a >> 8);
+            tex_data[dst_index + 0] = r;
+            tex_data[dst_index + 1] = g;
+            tex_data[dst_index + 2] = b;
+            tex_data[dst_index + 3] = a;
         }
     }
 

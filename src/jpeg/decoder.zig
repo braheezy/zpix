@@ -121,8 +121,8 @@ width: u32 = 0,
 height: u32 = 0,
 
 // destination image data
-img1: ?*image.GrayImage = null,
-img3: ?image.YCbCrImage = null,
+// img1: ?*image.GrayImage = null,
+img: ?image.Image = null,
 black_pixels: ?[]u8 = null,
 black_stride: usize = 0,
 
@@ -150,7 +150,7 @@ quant: [max_tq + 1]idct.Block,
 // preallocated temp buffer to reuse while reading
 tmp: [2 * idct.block_size]u8 = [_]u8{0} ** (2 * idct.block_size),
 
-pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.ImageType {
+pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     var d = Decoder{
         .al = al,
         .r = r,
@@ -182,30 +182,30 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
 
     return switch (d.num_components) {
         1 => {
-            var m = image.GrayModel.init();
             return image.Config{
                 .width = d.width,
                 .height = d.height,
-                .color_model = m.model(),
+                .color_model = .Gray,
             };
         },
         3 => {
-            var m = image.YCbCrModel.init();
             return image.Config{
                 .width = d.width,
                 .height = d.height,
-                .color_model = m.model(),
+                .color_model = .YCbCr,
             };
         },
         4 => image.Config{
             .width = d.width,
             .height = d.height,
+            // TODO: Support CMYK
+            .color_model = .CMYK,
         },
         else => error.InvalidSOIMarker,
     };
 }
 
-fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
+fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
     try self.readFull(self.tmp[0..2]);
 
     // Check for the Start of Image marker.
@@ -325,17 +325,22 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.ImageType {
         return error.ProgressiveNotSupported;
     }
 
-    if (self.img1) |img| {
-        return img.asImage();
-    }
-    if (self.img3) |_| {
-        if (self.black_pixels) |_| {
-            // return try self.applyBlack();
-            return error.BlackNotSupported;
-        } else if (self.isRgb()) {
-            return try self.convertToRGB();
-        }
-        return self.img3.?.asImage();
+    switch (self.img.?) {
+        .Gray => |*gray_img| {
+            return image.Image{ .Gray = gray_img.* };
+        },
+        .YCbCr => |*ycbcr_img| {
+            if (self.black_pixels) |_| {
+                // Black channel handling is not supported yet.
+                return error.BlackNotSupported;
+            } else if (self.isRgb()) {
+                return try self.convertToRGB();
+            }
+            return image.Image{ .YCbCr = ycbcr_img.* };
+        },
+        else => {
+            return error.UnsupportedImageType;
+        },
     }
     return error.MissingSosMarker;
 }
@@ -708,27 +713,33 @@ fn readByteStuffedByte(self: *Decoder) !u8 {
     return 0xff;
 }
 
-pub fn convertToRGB(self: *Decoder) !image.ImageType {
+pub fn convertToRGB(self: *Decoder) !image.Image {
+    // Ensure self.img is a YCbCr image before proceeding
+    const ycbcr_img: image.YCbCrImage = switch (self.img.?) {
+        .YCbCr => |img| img,
+        else => return error.InvalidImageType,
+    };
+
     const c_scale: usize = @intCast(@divTrunc(self.component[0].h, self.component[1].h));
-    const bounds = self.img3.?.bounds();
-    const img = try image.RGBAImage.init(self.al, bounds);
+    const bounds = ycbcr_img.bounds();
+    var img = try image.RGBAImage.init(self.al, bounds);
 
     var y = bounds.min.y;
     while (y < bounds.max.y) : (y += 1) {
         const po: usize = @intCast(img.pixOffset(bounds.min.x, y));
-        const yo: usize = @intCast(self.img3.?.yOffset(bounds.min.x, y));
-        const co: usize = @intCast(self.img3.?.cOffset(bounds.min.x, y));
+        const yo: usize = @intCast(ycbcr_img.yOffset(bounds.min.x, y));
+        const co: usize = @intCast(ycbcr_img.cOffset(bounds.min.x, y));
 
         var i: usize = 0;
         const i_max = bounds.max.x - bounds.min.x;
         while (i < i_max) : (i += 1) {
-            img.pixels[po + 4 * i + 0] = self.img3.?.y[yo + i];
-            img.pixels[po + 4 * i + 1] = self.img3.?.cb[co + i / c_scale];
-            img.pixels[po + 4 * i + 2] = self.img3.?.cr[co + i / c_scale];
+            img.pixels[po + 4 * i + 0] = ycbcr_img.y[yo + i];
+            img.pixels[po + 4 * i + 1] = ycbcr_img.cb[co + i / c_scale];
+            img.pixels[po + 4 * i + 2] = ycbcr_img.cr[co + i / c_scale];
             img.pixels[po + 4 * i + 3] = 255;
         }
     }
-    return img.asImage();
+    return .{ .RGBA = img };
 }
 
 /// applyBlack combines d.img3 and d.blackPix into a CMYK image.
@@ -750,10 +761,10 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         // and patch in the original K. The RGB to CMY inversion cancels out the
         // 'Adobe inversion' described above, so in practice, only the fourth channel (black) is inverted.
 
-        const bounds = self.img3.?.bounds();
+        const bounds = self.img.?.bounds();
         var img = try image.RGBAImage.init(self.al, bounds);
 
-        try imageutil.drawYCbCr(img, bounds, &self.img3.?, bounds.min);
+        try imageutil.drawYCbCr(img, bounds, &self.img.?, bounds.min);
 
         var i_base: usize = 0;
         var y: i32 = bounds.min.y;
@@ -1187,7 +1198,7 @@ fn processSos(self: *Decoder, n: i32) !void {
     const h: i32 = @intCast(self.height);
     const mxx = @divTrunc(w + 8 * h0 - 1, 8 * h0);
     const myy = @divTrunc(h + 8 * v0 - 1, 8 * v0);
-    if (self.img1 == null and self.img3 == null) {
+    if (self.img == null) {
         try self.makeImg(mxx, myy);
     }
 
@@ -1487,28 +1498,42 @@ pub fn reconstructBlock(
     var stride: usize = 0;
     if (self.num_components == 1) {
         // Single-component (Grayscale)
-        dest_pixels = self.img1.?.pixels[8 * (by * self.img1.?.stride + bx) ..];
-        stride = self.img1.?.stride;
+        switch (self.img.?) {
+            .Gray => |gray_img| {
+                dest_pixels = gray_img.pixels[8 * (by * gray_img.stride + bx) ..];
+                stride = gray_img.stride;
+            },
+            else => {
+                std.debug.panic("Expected Gray image for single-component JPEG", .{});
+            },
+        }
     } else {
         // Multi-component (YCbCr or additional black channel)
-        switch (component_index) {
-            0 => {
-                dest_pixels = self.img3.?.y[8 * (by * self.img3.?.y_stride + bx) ..];
-                stride = self.img3.?.y_stride;
+        switch (self.img.?) {
+            .YCbCr => |ycbcr_img| {
+                switch (component_index) {
+                    0 => {
+                        dest_pixels = ycbcr_img.y[8 * (by * ycbcr_img.y_stride + bx) ..];
+                        stride = ycbcr_img.y_stride;
+                    },
+                    1 => {
+                        dest_pixels = ycbcr_img.cb[8 * (by * ycbcr_img.c_stride + bx) ..];
+                        stride = ycbcr_img.c_stride;
+                    },
+                    2 => {
+                        dest_pixels = ycbcr_img.cr[8 * (by * ycbcr_img.c_stride + bx) ..];
+                        stride = ycbcr_img.c_stride;
+                    },
+                    3 => {
+                        dest_pixels = self.black_pixels.?[8 * (by * self.black_stride + bx) ..];
+                        stride = self.black_stride;
+                    },
+                    else => return error.UnsupportedComponent,
+                }
             },
-            1 => {
-                dest_pixels = self.img3.?.cb[8 * (by * self.img3.?.c_stride + bx) ..];
-                stride = self.img3.?.c_stride;
+            else => {
+                std.debug.panic("Expected YCbCr image for multi-component JPEG", .{});
             },
-            2 => {
-                dest_pixels = self.img3.?.cr[8 * (by * self.img3.?.c_stride + bx) ..];
-                stride = self.img3.?.c_stride;
-            },
-            3 => {
-                dest_pixels = self.black_pixels.?[8 * (by * self.black_stride + bx) ..];
-                stride = self.black_stride;
-            },
-            else => return error.UnsupportedComponent,
         }
     }
 
@@ -1587,19 +1612,19 @@ pub fn findRst(self: *Decoder, expected_rst: u8) !void {
 fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
     if (self.num_components == 1) {
         // Allocate a grayscale image if there's only one component.
-        const img: *image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
+        const gray_image: *image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
             0,
             0,
             8 * mxx,
             8 * myy,
         ));
         // Create a sub-image with the exact dimensions of the JPEG.
-        self.img1 = try img.subImage(self.al, image.Rectangle.init(
+        self.img = image.Image{ .Gray = try gray_image.subImage(self.al, image.Rectangle.init(
             0,
             0,
             @intCast(self.width),
             @intCast(self.height),
-        ));
+        )) orelse return error.CreateImageFailed };
         return;
     }
 
@@ -1628,12 +1653,12 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
     ), subsample_ratio);
 
     // Create a sub-image with the exact dimensions of the JPEG.
-    self.img3 = img.subImage(image.Rectangle.init(
+    self.img = image.Image{ .YCbCr = try img.subImage(image.Rectangle.init(
         0,
         0,
         @intCast(self.width),
         @intCast(self.height),
-    ));
+    )) orelse return error.CreateImageFailed };
 
     if (self.num_components == 4) {
         // Allocate space for the black channel if there are four components (CMYK).

@@ -1,5 +1,153 @@
+//! This file is a Zig translation of portions of the Go image package.
+//! The core logic is the same, but instead of using interfaces, tagged unions
+//! are used to represent different types of images and colors.
 const std = @import("std");
 const assert = std.debug.assert;
+
+/// Config holds an image's color model and dimensions.
+pub const Config = struct {
+    width: u32,
+    height: u32,
+    color_model: Model,
+};
+
+/// Model can convert any [Color] to one from its own color model. The conversion
+/// may be lossy.
+const Model = union(enum) {
+    RGB: void,
+    YCbCr: void,
+    RGBA: void,
+    Gray: void,
+
+    pub fn convert(self: Model, c: Color) Color {
+        return switch (self) {
+            .RGB => c, // No conversion needed for RGB.
+            .YCbCr => {
+                const yuv = rgbToYCbCr(c.r, c.g, c.b);
+                var ycbcr = YCbCrColor{
+                    .y = yuv[0],
+                    .cb = yuv[1],
+                    .cr = yuv[2],
+                };
+                return ycbcr.color();
+            },
+            .RGBA => {
+                const rgba = c.toRGBA();
+                var rbga = RGBAColor{
+                    .r = rgba[0],
+                    .g = rgba[1],
+                    .b = rgba[2],
+                    .a = rgba[3],
+                };
+                return rbga.color();
+            },
+            .Gray => {
+                const rgba = c.toRGBA();
+                // Apply the grayscale formula (same coefficients as Go)
+                const y = @as(u8, @intCast((19595 * rgba[0] + 38470 * rgba[1] + 7471 * rgba[2] + (1 << 15)) >> 24));
+                var gc = GrayColor{ .y = y };
+                return gc.color();
+            },
+        };
+    }
+};
+
+/// Color can convert itself to alpha-premultiplied 16-bits per channel RGBA.
+/// The conversion may be lossy.
+const Color = union(enum) {
+    RGB: struct { r: u8, g: u8, b: u8 },
+    RGBA: struct { r: u8, g: u8, b: u8, a: u8 },
+    YCbCr: struct { y: u8, cb: u8, cr: u8 },
+
+    // RGBA returns the alpha-premultiplied red, green, blue and alpha values
+    // for the color. Each value ranges within [0, 0xffff], but is represented
+    // by a uint32 so that multiplying by a blend factor up to 0xffff will not
+    // overflow.
+    //
+    // An alpha-premultiplied color component c has been scaled by alpha (a),
+    // so has valid values 0 <= c <= a.
+    pub fn toRGBA(self: Color) struct { u8, u8, u8, u8 } {
+        return switch (self) {
+            .RGB => |c| .{ c.r, c.g, c.b, 255 },
+            .RGBA => |c| .{ c.r, c.g, c.b, c.a },
+            .YCbCr => |c| {
+                // This code returns values in the range [0, 0xffff] instead of [0, 0xff]. There is a
+                // subtle difference between doing this and having YCbCr satisfy the Color
+                // interface by first converting to an RGBA. The latter loses some
+                // information by going to and from 8 bits per channel.
+                //
+                // For example, this code:
+                //	const y, cb, cr = 0x7f, 0x7f, 0x7f
+                //	r, g, b := color.YCbCrToRGB(y, cb, cr)
+                //	r0, g0, b0, _ := color.YCbCr{y, cb, cr}.RGBA()
+                //	r1, g1, b1, _ := color.RGBA{r, g, b, 0xff}.RGBA()
+                //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r0, g0, b0)
+                //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r1, g1, b1)
+                // prints:
+                //	0x7e18 0x808d 0x7db9
+                //	0x7e7e 0x8080 0x7d7d
+                const yy1 = @as(i32, c.y) * 0x10101;
+                const cb1 = @as(i32, c.cb) - 128;
+                const cr1 = @as(i32, c.cr) - 128;
+
+                var r = yy1 + 91881 * cr1;
+                r = if ((@as(u32, @bitCast(r)) & 0xff000000) == 0) r >> 8 else ~(@as(i32, r) >> 31) & 0xffff;
+
+                var g = yy1 - 22554 * cb1 - 46802 * cr1;
+                g = if ((@as(u32, @bitCast(g)) & 0xff000000) == 0) g >> 8 else ~(@as(i32, g) >> 31) & 0xffff;
+
+                var b = yy1 + 116130 * cb1;
+                b = if ((@as(u32, @bitCast(b)) & 0xff000000) == 0) b >> 8 else ~(@as(i32, b) >> 31) & 0xffff;
+
+                return .{
+                    @as(u8, @intCast(r >> 8)),
+                    @as(u8, @intCast(g >> 8)),
+                    @as(u8, @intCast(b >> 8)),
+                    255,
+                };
+            },
+        };
+    }
+};
+
+/// Image is a finite rectangular grid of [Color] values taken from a color
+/// model.
+pub const Image = union(enum) {
+    Gray: *GrayImage,
+    YCbCr: YCbCrImage,
+    RGBA: *RGBAImage,
+
+    // bounds returns the domain for which At can return non-zero color.
+    // The bounds do not necessarily contain the point (0, 0).
+    pub fn bounds(self: Image) Rectangle {
+        return switch (self) {
+            .Gray => |img| img.bounds(),
+            .YCbCr => |img| img.bounds(),
+            .RGBA => |img| img.bounds(),
+        };
+    }
+
+    // at returns the color of the pixel at (x, y).
+    // at(bounds().min.X, bounds().min.Y) returns the upper-left pixel of the grid.
+    // at(Bounds().max.X-1, bounds().max.Y-1) returns the lower-right one.
+    pub fn at(self: Image, x: i32, y: i32) Color {
+        return switch (self) {
+            .Gray => |img| img.at(x, y),
+            .YCbCr => |img| img.at(x, y),
+            .RGBA => |img| img.at(x, y),
+        };
+    }
+
+    pub fn free(self: Image, al: std.mem.Allocator) void {
+        switch (self) {
+            .Gray => {}, // Gray doesn't own memory explicitly
+            .YCbCr => |img| {
+                al.free(img.pixels);
+            },
+            .RGBA => |img| al.free(img.pixels),
+        }
+    }
+};
 
 pub const RGBAColor = struct {
     r: usize = 0,
@@ -8,44 +156,12 @@ pub const RGBAColor = struct {
     a: usize = 0,
 
     pub fn color(self: *RGBAColor) Color {
-        return Color.init(self, rgba);
-    }
-
-    pub fn rgba(self: *RGBAColor) struct { u32, u32, u32, u32 } {
-        var r: u32 = @intCast(self.r);
-        r |= r << 8;
-
-        var g: u32 = @intCast(self.g);
-        g |= g << 8;
-
-        var b: u32 = @intCast(self.b);
-        b |= b << 8;
-
-        var a: u32 = @intCast(self.a);
-        a |= a << 8;
-
-        return .{ r, g, b, a };
-    }
-};
-
-pub const RGBAModel = struct {
-    pub fn init() RGBAModel {
-        return RGBAModel{};
-    }
-
-    pub fn convert(_: *const RGBAModel, c: Color) Color {
-        const rgba = c.rgbaFn(c.ptr);
-        var rbga = RGBAColor{
-            .r = rgba[0],
-            .g = rgba[1],
-            .b = rgba[2],
-            .a = rgba[3],
-        };
-        return rbga.color();
-    }
-
-    pub fn model(self: *RGBAModel) Model {
-        return Model.init(self, convert);
+        return Color{ .RGBA = .{
+            .r = self.r,
+            .g = self.g,
+            .b = self.b,
+            .a = self.a,
+        } };
     }
 };
 
@@ -90,12 +206,6 @@ pub const RGBAImage = struct {
         return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
     }
 
-    pub fn colorModel(self: *RGBAImage) Model {
-        _ = self;
-        var rgbaModel = RGBAModel.init();
-        return rgbaModel.model();
-    }
-
     pub fn bounds(self: *RGBAImage) Rectangle {
         return self.rect;
     }
@@ -120,16 +230,6 @@ pub const RGBAImage = struct {
             .a = @as(u8, s[3]),
         };
     }
-
-    pub fn asImage(self: RGBAImage) ImageType {
-        return ImageType{ .RGB = self };
-    }
-};
-
-pub const Config = struct {
-    width: u32,
-    height: u32,
-    color_model: ?Model = null,
 };
 
 pub const YCbCrSubsample = enum {
@@ -158,7 +258,7 @@ pub const YCbCrImage = struct {
     ) !YCbCrImage {
         const w, const h, const cw, const ch = yCbCrSize(rect, subsample_ratio);
 
-        // totalLength should be the same as i2, below, for a valid Rectangle r.
+        // totalLength should be the same as i2, below, for a valid Rectangle rect.
         const total_length = add2NonNeg(
             mul3NonNeg(1, w, h),
             mul3NonNeg(2, cw, ch),
@@ -224,11 +324,12 @@ pub const YCbCrImage = struct {
         return .{ w, h, cw, ch };
     }
 
-    pub fn subImage(self: *YCbCrImage, rect: Rectangle) ?YCbCrImage {
+    pub fn subImage(self: *YCbCrImage, rect: Rectangle) !?YCbCrImage {
         if (rect.Intersect(self.rect)) |r| {
             const yi: usize = @intCast(self.yOffset(r.min.x, r.min.y));
             const ci: usize = @intCast(self.cOffset(r.min.x, r.min.y));
-            return .{
+
+            return YCbCrImage{
                 .y = self.y[yi..],
                 .cb = self.cb[ci..],
                 .cr = self.cr[ci..],
@@ -239,9 +340,7 @@ pub const YCbCrImage = struct {
                 .pixels = self.pixels,
             };
         } else {
-            return .{
-                .subsample_ratio = self.subsample_ratio,
-            };
+            return null;
         }
     }
 
@@ -276,32 +375,37 @@ pub const YCbCrImage = struct {
         std.debug.print("here?\n", .{});
         return ycbcr.color();
     }
-    pub fn colorModel(self: *YCbCrImage) Model {
-        _ = self;
-        var yCbCrModel = YCbCrModel.init();
-        return yCbCrModel.model();
-    }
 
-    pub fn asImage(self: YCbCrImage) ImageType {
-        return ImageType{ .YCbCr = self };
-    }
-
-    pub fn YCbCrAt(self: YCbCrImage, x: i32, y: i32) YCbCrColor {
+    pub fn YCbCrAt(self: YCbCrImage, x: i32, y: i32) Color {
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return YCbCrColor{ .y = 0, .cb = 0, .cr = 0 };
+            return Color{ .YCbCr = .{ .y = 0, .cb = 0, .cr = 0 } };
         }
 
         // Calculate offsets for Y and Cb/Cr.
         const yi: usize = @intCast(self.yOffset(x, y));
         const ci: usize = @intCast(self.cOffset(x, y));
 
-        return YCbCrColor{
+        return Color{ .YCbCr = .{
             .y = self.y[yi],
             .cb = self.cb[ci],
             .cr = self.cr[ci],
-        };
+        } };
+    }
+};
+
+const YCbCrColor = struct {
+    y: u8 = 0,
+    cb: u8 = 0,
+    cr: u8 = 0,
+
+    pub fn color(self: *YCbCrColor) Color {
+        return Color{ .YCbCr = .{
+            .y = self.y,
+            .cb = self.cb,
+            .cr = self.cr,
+        } };
     }
 };
 
@@ -345,12 +449,6 @@ pub const GrayImage = struct {
         return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 1;
     }
 
-    pub fn colorModel(self: *GrayImage) Model {
-        _ = self;
-        var grayModel = GrayModel.init();
-        return grayModel.model();
-    }
-
     pub fn bounds(self: *GrayImage) Rectangle {
         return self.rect;
     }
@@ -369,240 +467,17 @@ pub const GrayImage = struct {
         var gc = GrayColor{ .y = self.pixels[@intCast(i)] };
         return gc.color();
     }
-
-    pub fn asImage(self: GrayImage) ImageType {
-        return ImageType{ .Gray = self };
-    }
-};
-
-fn pixelBufferLength(bytes_per_pixel: usize, rect: Rectangle, image_type_name: []const u8) u32 {
-    const total_length = mul3NonNeg(@intCast(bytes_per_pixel), rect.dX(), rect.dY());
-    if (total_length < 0) {
-        std.debug.panic("overflow in pixel buffer length calculation for image type '{s}'", .{image_type_name});
-    }
-    return @intCast(total_length);
-}
-
-fn mul3NonNeg(x: i32, y: i32, z: i32) i32 {
-    if (x < 0 or y < 0 or z < 0) return -1;
-
-    var hi: u64 = 0;
-    var lo: u64 = 0;
-
-    // Multiply x and y
-    hi, lo = mul64(@intCast(x), @intCast(y));
-    if (hi != 0) return -1;
-
-    // Multiply the result with z
-    hi, lo = mul64(lo, @intCast(z));
-    if (hi != 0) return -1;
-
-    return @intCast(lo);
-}
-
-pub fn mul64(x: u64, y: u64) struct { u64, u64 } {
-    const mask32 = (1 << 32) - 1;
-
-    const x0 = x & mask32;
-    const x1 = x >> 32;
-    const y0 = y & mask32;
-    const y1 = y >> 32;
-
-    const w0 = x0 * y0;
-    const t = x1 * y0 + (w0 >> 32);
-    const w1 = t & mask32;
-    const w2 = t >> 32;
-
-    const w1_with_x0_y1 = w1 + x0 * y1;
-    const hi = x1 * y1 + w2 + (w1_with_x0_y1 >> 32);
-    const lo = x * y;
-
-    return .{ hi, lo };
-}
-
-pub const ImageType = union(enum) {
-    Gray: GrayImage,
-    YCbCr: YCbCrImage,
-    RGB: RGBAImage,
-
-    pub fn free(self: ImageType, al: std.mem.Allocator) void {
-        switch (self) {
-            .Gray => {},
-            .YCbCr => al.free(self.YCbCr.pixels),
-            .RGB => {},
-        }
-    }
-};
-
-pub const Image = struct {
-    ptr: *anyopaque,
-    colorModelFn: *const fn (ptr: *anyopaque) Model,
-    boundsFn: *const fn (ptr: *anyopaque) Rectangle,
-    atFn: *const fn (ptr: *anyopaque, x: i32, y: i32) Color,
-
-    pub fn colorModel(self: *const Image) Model {
-        return self.colorModelFn(self.ptr);
-    }
-
-    pub fn bounds(self: *const Image) Rectangle {
-        return self.boundsFn(self.ptr);
-    }
-
-    pub fn at(self: *const Image, x: i32, y: i32) Color {
-        std.debug.print("at\n", .{});
-        return self.atFn(self.ptr, x, y);
-    }
-};
-
-// #################################
-// # Geometry
-// #################################
-// A Point is an X, Y coordinate pair. The axes increase right and down.
-pub const Point = struct {
-    x: i32,
-    y: i32,
-
-    pub fn In(self: Point, r: Rectangle) bool {
-        return self.x >= r.min.x and self.x < r.max.x and self.y >= r.min.y and self.y < r.max.y;
-    }
-};
-
-pub const Rectangle = struct {
-    min: Point,
-    max: Point,
-
-    pub fn dX(self: Rectangle) i32 {
-        return self.max.x - self.min.x;
-    }
-    pub fn dY(self: Rectangle) i32 {
-        return self.max.y - self.min.y;
-    }
-    pub fn init(x0: i32, y0: i32, x1: i32, y1: i32) Rectangle {
-        const x_min = if (x0 > x1) x1 else x0;
-        const x_max = if (x0 > x1) x0 else x1;
-        const y_min = if (y0 > y1) y1 else y0;
-        const y_max = if (y0 > y1) y0 else y1;
-
-        return Rectangle{
-            .min = .{ .x = x_min, .y = y_min },
-            .max = .{ .x = x_max, .y = y_max },
-        };
-    }
-    // Intersect returns the largest rectangle contained by both self and other. If the
-    // two rectangles do not overlap then null will be returned.
-    pub fn Intersect(self: Rectangle, other: Rectangle) ?Rectangle {
-        const x0 = if (self.min.x > other.min.x) self.min.x else other.min.x;
-        const y0 = if (self.min.y > other.min.y) self.min.y else other.min.y;
-        const x1 = if (self.max.x < other.max.x) self.max.x else other.max.x;
-        const y1 = if (self.max.y < other.max.y) self.max.y else other.max.y;
-
-        if (x0 >= x1 or y0 >= y1) return null;
-
-        return Rectangle.init(x0, y0, x1, y1);
-    }
-};
-
-// add2NonNeg returns (x + y), unless at least one argument is negative or if
-// the computation overflows the int type, in which case it returns -1.
-fn add2NonNeg(x: i32, y: i32) i32 {
-    if (x < 0 or y < 0) return -1;
-
-    const sum: i32 = x + y;
-    if (sum < 0) return -1;
-
-    return sum;
-}
-// #################################
-// # Color
-// #################################
-
-const Model = struct {
-    ptr: *anyopaque,
-    convertFn: *const fn (ptr: *anyopaque, c: Color) Color,
-
-    pub fn init(
-        pointer: anytype,
-        comptime convertFn: fn (ptr: @TypeOf(pointer), c: Color) Color,
-    ) Model {
-        const Ptr = @TypeOf(pointer);
-        assert(@typeInfo(Ptr) == .Pointer);
-        assert(@typeInfo(Ptr).Pointer.size == .One);
-        assert(@typeInfo(@typeInfo(Ptr).Pointer.child) == .Struct);
-
-        const impl = struct {
-            fn convert(ptr: *anyopaque, c: Color) Color {
-                const self: Ptr = @ptrCast(@alignCast(ptr));
-                return convertFn(self, c);
-            }
-        };
-
-        return .{
-            .ptr = pointer,
-            .convertFn = impl.convert,
-        };
-    }
-
-    pub fn convert(self: Model, c: Color) Color {
-        return self.convertFn(self.ptr, c);
-    }
-};
-
-const Color = struct {
-    ptr: *anyopaque,
-    rgbaFn: *const fn (ptr: *anyopaque) struct { u32, u32, u32, u32 },
-
-    pub fn init(
-        pointer: anytype,
-        comptime rgbaConvertFn: fn (ptr: @TypeOf(pointer)) struct { u32, u32, u32, u32 },
-    ) Color {
-        const Ptr = @TypeOf(pointer);
-        assert(@typeInfo(Ptr) == .Pointer);
-        assert(@typeInfo(Ptr).Pointer.size == .One);
-        assert(@typeInfo(@typeInfo(Ptr).Pointer.child) == .Struct);
-
-        const impl = struct {
-            fn rgba(ptr: *anyopaque) struct { u32, u32, u32, u32 } {
-                const self: Ptr = @ptrCast(@alignCast(ptr));
-                return rgbaConvertFn(self);
-            }
-        };
-
-        return .{
-            .ptr = pointer,
-            .rgbaFn = impl.rgba,
-        };
-    }
-
-    pub fn rgba(self: Color) struct { u32, u32, u32, u32 } {
-        return self.rgbaFn(self.ptr);
-    }
-};
-
-pub const GrayModel = struct {
-    pub fn init() GrayModel {
-        return GrayModel{};
-    }
-
-    pub fn convert(_: *const GrayModel, c: Color) Color {
-        const r, const g, const b, _ = c.rgbaFn(c.ptr);
-
-        // Apply the grayscale formula (same coefficients as Go)
-        const y = @as(u8, @intCast((19595 * r + 38470 * g + 7471 * b + (1 << 15)) >> 24));
-
-        var gc = GrayColor{ .y = y };
-        return gc.color();
-    }
-
-    pub fn model(self: *GrayModel) Model {
-        return Model.init(self, convert);
-    }
 };
 
 const GrayColor = struct {
     y: u8 = 0,
 
     pub fn color(self: *GrayColor) Color {
-        return Color.init(self, rgba);
+        return Color{ .RGB = .{
+            .r = self.y,
+            .g = self.y,
+            .b = self.y,
+        } };
     }
 
     pub fn rgba(self: *GrayColor) struct { u32, u32, u32, u32 } {
@@ -618,103 +493,7 @@ const GrayColor = struct {
     }
 };
 
-const YCbCrColor = struct {
-    y: u8 = 0,
-    cb: u8 = 0,
-    cr: u8 = 0,
-
-    pub fn color(self: *YCbCrColor) Color {
-        std.debug.print("YCbCrColor.color\n", .{});
-        return Color.init(self, rgba);
-    }
-
-    pub fn rgba(self: *YCbCrColor) struct { u32, u32, u32, u32 } {
-        // This code is a copy of the YCbCrToRGB function above, except that it
-        // returns values in the range [0, 0xffff] instead of [0, 0xff]. There is a
-        // subtle difference between doing this and having YCbCr satisfy the Color
-        // interface by first converting to an RGBA. The latter loses some
-        // information by going to and from 8 bits per channel.
-        //
-        // For example, this code:
-        //	const y, cb, cr = 0x7f, 0x7f, 0x7f
-        //	r, g, b := color.YCbCrToRGB(y, cb, cr)
-        //	r0, g0, b0, _ := color.YCbCr{y, cb, cr}.RGBA()
-        //	r1, g1, b1, _ := color.RGBA{r, g, b, 0xff}.RGBA()
-        //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r0, g0, b0)
-        //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r1, g1, b1)
-        // prints:
-        //	0x7e18 0x808d 0x7db9
-        //	0x7e7e 0x8080 0x7d7d
-        const yy1: i32 = @as(i32, self.y) * 0x10101;
-        const cb1: i32 = @as(i32, self.cb) - 128;
-        const cr1: i32 = @as(i32, self.cr) - 128;
-
-        // The bit twiddling below is equivalent to
-        //
-        // r := (yy1 + 91881*cr1) >> 8
-        // if r < 0 {
-        //     r = 0
-        // } else if r > 0xff {
-        //     r = 0xffff
-        // }
-        //
-        // but uses fewer branches and is faster.
-        // The code below to compute g and b uses a similar pattern.
-        var r: i32 = yy1 + 91881 * cr1;
-        if (@as(u32, @bitCast(r)) & 0xff000000 == 0) {
-            r >>= 8;
-        } else {
-            r = ~(@as(i32, r) >> 31) & 0xffff;
-        }
-
-        // Compute G (Green channel)
-        var g: i32 = yy1 - 22554 * cb1 - 46802 * cr1;
-        if (@as(u32, @bitCast(g)) & 0xff000000 == 0) {
-            g >>= 8;
-        } else {
-            g = ~(@as(i32, g) >> 31) & 0xffff;
-        }
-
-        // Compute B (Blue channel)
-        var b: i32 = yy1 + 116130 * cb1;
-        if (@as(u32, @bitCast(b)) & 0xff000000 == 0) {
-            b >>= 8;
-        } else {
-            b = ~(@as(i32, b) >> 31) & 0xffff;
-        }
-
-        return .{
-            @as(u32, @intCast(r)),
-            @as(u32, @intCast(g)),
-            @as(u32, @intCast(b)),
-            0xffff,
-        };
-    }
-};
-
-pub const YCbCrModel = struct {
-    pub fn init() *YCbCrModel {
-        var yCbCrModel = YCbCrModel{};
-        return &yCbCrModel;
-    }
-
-    pub fn convert(_: *const YCbCrModel, c: Color) Color {
-        const r, const g, const b, _ = c.rgbaFn(c.ptr);
-
-        const yuv = rgbToYCbCr(@intCast(r >> 8), @intCast(g), @intCast(b));
-        var ycbcr = YCbCrColor{
-            .y = yuv[0],
-            .cb = yuv[1],
-            .cr = yuv[2],
-        };
-        return ycbcr.color();
-    }
-
-    pub fn model(self: *YCbCrModel) Model {
-        return Model.init(self, convert);
-    }
-};
-
+/// rgbToYCbCr converts an RGB triple to a Y'CbCr triple.
 pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     // The JFIF specification says:
     //	Y' =  0.2990*R + 0.5870*G + 0.1140*B
@@ -763,3 +542,113 @@ pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
 
     return .{ @intCast(yy), @intCast(cb), @intCast(cr) };
 }
+
+/// pixelBufferLength returns the length of the []u8 typed pixels slice field.
+/// Conceptually, this is just (bpp * width * height),
+/// but this function panics if at least one of those is negative or if the
+/// computation would overflow the int type.
+fn pixelBufferLength(bytes_per_pixel: usize, rect: Rectangle, image_type_name: []const u8) u32 {
+    const total_length = mul3NonNeg(@intCast(bytes_per_pixel), rect.dX(), rect.dY());
+    if (total_length < 0) {
+        std.debug.panic("overflow in pixel buffer length calculation for image type '{s}'", .{image_type_name});
+    }
+    return @intCast(total_length);
+}
+
+/// mul3NonNeg returns (x * y * z), unless at least one argument is negative or
+/// if the computation overflows the i32 type, in which case it returns -1.
+fn mul3NonNeg(x: i32, y: i32, z: i32) i32 {
+    if (x < 0 or y < 0 or z < 0) return -1;
+
+    var hi: u64 = 0;
+    var lo: u64 = 0;
+
+    // Multiply x and y
+    hi, lo = mul64(@intCast(x), @intCast(y));
+    if (hi != 0) return -1;
+
+    // Multiply the result with z
+    hi, lo = mul64(lo, @intCast(z));
+    if (hi != 0) return -1;
+
+    return @intCast(lo);
+}
+
+pub fn mul64(x: u64, y: u64) struct { u64, u64 } {
+    const mask32 = (1 << 32) - 1;
+
+    const x0 = x & mask32;
+    const x1 = x >> 32;
+    const y0 = y & mask32;
+    const y1 = y >> 32;
+
+    const w0 = x0 * y0;
+    const t = x1 * y0 + (w0 >> 32);
+    const w1 = t & mask32;
+    const w2 = t >> 32;
+
+    const w1_with_x0_y1 = w1 + x0 * y1;
+    const hi = x1 * y1 + w2 + (w1_with_x0_y1 >> 32);
+    const lo = x * y;
+
+    return .{ hi, lo };
+}
+// add2NonNeg returns (x + y), unless at least one argument is negative or if
+// the computation overflows the i32 type, in which case it returns -1.
+fn add2NonNeg(x: i32, y: i32) i32 {
+    if (x < 0 or y < 0) return -1;
+
+    const sum: i32 = x + y;
+    if (sum < 0) return -1;
+
+    return sum;
+}
+
+/// A Point is an X, Y coordinate pair. The axes increase right and down.
+pub const Point = struct {
+    x: i32,
+    y: i32,
+
+    pub fn In(self: Point, r: Rectangle) bool {
+        return self.x >= r.min.x and self.x < r.max.x and self.y >= r.min.y and self.y < r.max.y;
+    }
+};
+
+/// A Rectangle contains the points with Min.X <= X < Max.X, Min.Y <= Y < Max.Y.
+/// It is well-formed if Min.X <= Max.X and likewise for Y. Points are always
+/// well-formed. A rectangle's methods always return well-formed outputs for
+/// well-formed inputs.
+pub const Rectangle = struct {
+    min: Point,
+    max: Point,
+
+    pub fn dX(self: Rectangle) i32 {
+        return self.max.x - self.min.x;
+    }
+    pub fn dY(self: Rectangle) i32 {
+        return self.max.y - self.min.y;
+    }
+    pub fn init(x0: i32, y0: i32, x1: i32, y1: i32) Rectangle {
+        const x_min = if (x0 > x1) x1 else x0;
+        const x_max = if (x0 > x1) x0 else x1;
+        const y_min = if (y0 > y1) y1 else y0;
+        const y_max = if (y0 > y1) y0 else y1;
+
+        return Rectangle{
+            .min = .{ .x = x_min, .y = y_min },
+            .max = .{ .x = x_max, .y = y_max },
+        };
+    }
+    // Intersect returns the largest rectangle contained by both self and other. If the
+    // two rectangles do not overlap then null will be returned.
+    pub fn Intersect(self: Rectangle, other: Rectangle) ?Rectangle {
+        const x0 = if (self.min.x > other.min.x) self.min.x else other.min.x;
+        const y0 = if (self.min.y > other.min.y) self.min.y else other.min.y;
+        const x1 = if (self.max.x < other.max.x) self.max.x else other.max.x;
+        const y1 = if (self.max.y < other.max.y) self.max.y else other.max.y;
+
+        if (x0 >= x1 or y0 >= y1) return null;
+
+        return Rectangle.init(x0, y0, x1, y1);
+    }
+};
