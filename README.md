@@ -3,7 +3,7 @@
 A JPEG decoder in pure Zig.
 
 > [!CAUTION]
-> This project is in active development and does not decode JPEGs yet.
+> This project is in active development and does not decode all JPEGs yet.
 
 ## Development
 
