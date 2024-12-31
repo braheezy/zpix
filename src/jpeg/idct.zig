@@ -62,7 +62,7 @@ const w3pw5 = w3 + w5;
 const w3mw5 = w3 - w5;
 
 // 256/sqrt(2)
-const r2 = 181;
+const r2: i32 = 181;
 
 /// Performs a 2-D Inverse Discrete Cosine Transformation.
 ///

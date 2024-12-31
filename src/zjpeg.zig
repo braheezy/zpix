@@ -72,7 +72,7 @@ pub fn main() !void {
 
             switch (img) {
                 .YCbCr => |i| {
-                    try draw(i);
+                    try draw(allocator, arg, i);
                 },
                 else => return error.NotReadyYet,
             }
@@ -80,7 +80,7 @@ pub fn main() !void {
     }
 }
 
-fn draw(img: image.YCbCrImage) !void {
+fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.YCbCrImage) !void {
     if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
         std.debug.print("Failed to initialize SDL: {s}\n", .{sdl.SDL_GetError()});
         return;
@@ -91,8 +91,11 @@ fn draw(img: image.YCbCrImage) !void {
     const height = img.bounds().dY();
     const scale_factor = 4;
 
+    const window_title = try std.fmt.allocPrintZ(al, "zjpeg view - {s}", .{file_name});
+    defer al.free(window_title);
+
     const window = sdl.SDL_CreateWindow(
-        "Image Viewer",
+        window_title,
         sdl.SDL_WINDOWPOS_CENTERED,
         sdl.SDL_WINDOWPOS_CENTERED,
         @intCast(@divTrunc(width, scale_factor)),

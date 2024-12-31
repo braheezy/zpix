@@ -1,9 +1,12 @@
 # zjpeg
 
-A JPEG decoder in pure Zig.
+A JPEG decoder in pure Zig. It supports:
 
-> [!CAUTION]
-> This project is in active development and does not decode all JPEGs yet.
+- Baseline and Progressive formats
+- Grey and YCbCr color formats.
+
+Here's proof. The Mac image viewer on the left, and a SDL image viewer in Zig using `zjpeg`:
+![demo](demo.png)
 
 ## Development
 

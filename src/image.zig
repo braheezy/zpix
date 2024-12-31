@@ -300,20 +300,20 @@ pub const YCbCrImage = struct {
                 ch = h;
             },
             .Ratio420 => {
-                cw = @divExact((r.max.x + 1), 2) - @divExact(r.min.x, 2);
-                ch = @divExact((r.max.y + 1), 2) - @divExact(r.min.y, 2);
+                cw = @divTrunc((r.max.x + 1), 2) - @divTrunc(r.min.x, 2);
+                ch = @divTrunc((r.max.y + 1), 2) - @divTrunc(r.min.y, 2);
             },
             .Ratio440 => {
                 cw = w;
-                ch = @divExact((r.max.y + 1), 2) - @divExact(r.min.y, 2);
+                ch = @divTrunc((r.max.y + 1), 2) - @divTrunc(r.min.y, 2);
             },
             .Ratio411 => {
-                cw = @divExact((r.max.x + 3), 4) - @divExact(r.min.x, 4);
+                cw = @divTrunc((r.max.x + 3), 4) - @divTrunc(r.min.x, 4);
                 ch = h;
             },
             .Ratio410 => {
-                cw = @divExact((r.max.x + 3), 4) - @divExact(r.min.x, 4);
-                ch = @divExact((r.max.y + 1), 2) - @divExact(r.min.y, 2);
+                cw = @divTrunc((r.max.x + 3), 4) - @divTrunc(r.min.x, 4);
+                ch = @divTrunc((r.max.y + 1), 2) - @divTrunc(r.min.y, 2);
             },
             else => { // Default to Ratio444
                 cw = w;

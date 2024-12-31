@@ -144,6 +144,8 @@ adobe_transform: AdobeTransform = .unknown,
 eob_run: u16 = 0,
 
 component: [max_components]Component,
+// Saved state between progressive-mode scans.
+progressive_coefficients: [max_components]?[]idct.Block,
 huff: [max_tc + 1][max_th + 1]HuffTable,
 // Quantization table, in zig-zag order.
 quant: [max_tq + 1]idct.Block,
@@ -159,7 +161,16 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         .huff = undefined,
         .quant = undefined,
         .bits = undefined,
+        .progressive_coefficients = [_]?[]idct.Block{ null, null, null, null },
     };
+
+    defer {
+        for (d.progressive_coefficients) |slice_opt| {
+            if (slice_opt) |slice| {
+                d.al.free(slice);
+            }
+        }
+    }
 
     return try d.decodeInner(false);
 }
@@ -321,8 +332,7 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
     }
 
     if (self.progressive) {
-        // try self.reconstructProgressiveImage();
-        return error.ProgressiveNotSupported;
+        try self.reconstructProgressiveImage();
     }
 
     switch (self.img.?) {
@@ -445,7 +455,7 @@ fn fill(self: *Decoder) !void {
 }
 
 // unreadByteStuffedByte undoes the most recent readByteStuffedByte call,
-// giving a byte of data back from self.bits to sekf.bytes. The Huffman look-up table
+// giving a byte of data back from self.bits to self.bytes. The Huffman look-up table
 // requires at least 8 bits for look-up, which means that Huffman decoding can
 // sometimes overshoot and read one or two too many bytes. Two-byte overshoot
 // can happen when expecting to read a 0xff 0x00 byte-stuffed byte.
@@ -1006,12 +1016,13 @@ fn processDht(self: *Decoder, n: i32) !void {
         try self.readFull(huff_table.vals[0..huff_codes_len]);
 
         // Derive the look-up table.
+        huff_table.clearLut();
         var code: u32 = 0;
         var val_index: usize = 0;
         for (0..HuffTable.lut_size) |i| {
             code <<= 1;
-            const current_code: usize = @intCast(num_codes[i]);
-            for (0..current_code) |_| {
+            var j: usize = 0;
+            while (j < num_codes[i]) : (j += 1) {
                 // The codeLength is 1+i, so shift code by 8-(1+i) to
                 // calculate the high bits for every 8-bit sequence
                 // whose codeLength's high bits matches code.
@@ -1102,12 +1113,12 @@ fn processSos(self: *Decoder, n: i32) !void {
     }
 
     const ScanComponent = struct {
-        id: u8,
-        td: u8, // DC table selector.
-        ta: u8, // AC table selector.
+        id: u8 = 0,
+        td: u8 = 0, // DC table selector.
+        ta: u8 = 0, // AC table selector.
     };
-    var scan = try self.al.alloc(ScanComponent, max_components);
-    defer self.al.free(scan);
+    var scan = [_]ScanComponent{.{}} ** max_components;
+    // defer self.al.free(scan);
 
     // Accumulating horizontal and vertical sampling factors
     var total_hv_sampling_factors: i32 = 0;
@@ -1203,7 +1214,20 @@ fn processSos(self: *Decoder, n: i32) !void {
     }
 
     if (self.progressive) {
-        return error.ProgressiveNotSupported;
+        var i: usize = 0;
+        while (i < self.num_components) : (i += 1) {
+            const component_index = scan[i].id;
+            if (self.progressive_coefficients[component_index] == null) {
+                const prog_block_size: usize = @intCast(mxx * myy * self.component[component_index].h * self.component[component_index].v);
+                self.progressive_coefficients[component_index] = try self.al.alloc(
+                    idct.Block,
+                    prog_block_size,
+                );
+                for (0..prog_block_size) |j| {
+                    self.progressive_coefficients[component_index].?[j] = idct.emptyBlock();
+                }
+            }
+        }
     }
 
     self.bits = Bits{};
@@ -1262,8 +1286,8 @@ fn processSos(self: *Decoder, n: i32) !void {
 
                     // Load the previous partially decoded coefficients, if applicable.
                     if (self.progressive) {
-                        // b = self.progCoeffs[c_index][by * mxx * hi + bx];
-                        return error.ProgressiveNotSupported;
+                        const block_index: usize = @intCast(by * mxx * hi + bx);
+                        b = self.progressive_coefficients[c_index].?[block_index];
                     } else {
                         b = idct.emptyBlock();
                     }
@@ -1336,7 +1360,8 @@ fn processSos(self: *Decoder, n: i32) !void {
                     }
 
                     if (self.progressive) {
-                        // self.progCoeffs[c_index][by * @as(i32, @intCast(self.width)) * hi + bx] = b;
+                        const block_index: usize = @intCast(by * mxx * hi + bx);
+                        self.progressive_coefficients[c_index].?[block_index] = b;
                         // At this point, we could call reconstructBlock to dequantize and perform the
                         // inverse DCT, to save early stages of a progressive image to the *image.YCbCr
                         // buffers (the whole point of progressive encoding), but in Go, the jpeg.Decode
@@ -1346,7 +1371,6 @@ fn processSos(self: *Decoder, n: i32) !void {
                         // SOS markers are processed.
                         continue;
                     }
-
                     try self.reconstructBlock(&b, bx, by, @intCast(c_index));
                 }
             }
@@ -1469,7 +1493,7 @@ fn refineNonZeroes(self: *Decoder, b: *idct.Block, zig: i32, zig_end: i32, nz: i
             b[index] -= delta;
         }
     }
-    return zig;
+    return local_zig;
 }
 
 // reconstructBlock dequantizes, performs the inverse DCT and stores the block
@@ -1563,6 +1587,32 @@ pub fn reconstructBlock(
     }
 }
 
+pub fn reconstructProgressiveImage(self: *Decoder) !void {
+    // The h0, mxx, by and bx variables have the same meaning as in the
+    // processSos method.
+    const h0 = self.component[0].h;
+    const mxx = @divTrunc(@as(i32, @intCast(self.width)) + 8 * h0 - 1, 8 * h0);
+
+    var i: usize = 0;
+    while (i < self.num_components) : (i += 1) {
+        if (self.progressive_coefficients[i] == null) continue;
+        const v: usize = @intCast(8 * @divTrunc(self.component[0].v, self.component[i].v));
+        const h: usize = @intCast(8 * @divTrunc(self.component[0].h, self.component[i].h));
+        const stride: usize = @intCast(mxx * self.component[i].h);
+        var by: usize = 0;
+        while (by * v < self.height) : (by += 1) {
+            var bx: usize = 0;
+            while (bx * h < self.width) : (bx += 1) {
+                try self.reconstructBlock(
+                    &self.progressive_coefficients[i].?[by * stride + bx],
+                    @intCast(bx),
+                    @intCast(by),
+                    i,
+                );
+            }
+        }
+    }
+}
 // findRST advances past the next RST restart marker that matches expected_rst.
 // Other than I/O errors, it is also an error if we encounter an {0xFF, M}
 // two-byte marker sequence where M is not 0x00, 0xFF or the expected_rst.

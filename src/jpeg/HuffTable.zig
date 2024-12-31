@@ -24,3 +24,9 @@ min_codes: [max_num_codes]i32 = [_]i32{0} ** max_num_codes,
 max_codes: [max_num_codes]i32 = [_]i32{0} ** max_num_codes,
 // valsIndices[i] is the index into vals of min_codes[i].
 vals_indices: [max_num_codes]i32 = [_]i32{0} ** max_num_codes,
+
+pub fn clearLut(self: *HuffTable) void {
+    for (&self.lut) |*x| {
+        x.* = 0;
+    }
+}
