@@ -341,7 +341,6 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
         },
         .YCbCr => |*ycbcr_img| {
             if (self.black_pixels) |_| {
-                // Black channel handling is not supported yet.
                 return self.applyBlack();
             } else if (self.isRgb()) {
                 return try self.convertToRGB();
@@ -764,9 +763,22 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         return error.UnsupportedColorModel;
     }
 
+    // We're going to allocate new memory for the CMYK image, so we can free the
+    // old image memory
+    defer {
+        if (self.black_pixels) |black_pixels| {
+            self.al.free(black_pixels);
+        }
+
+        if (self.img) |ycbcr_img| {
+            ycbcr_img.free(self.al);
+        }
+    }
+
     // If the 4-component JPEG image isn't explicitly marked as "Unknown (RGB or CMYK)"
     // we assume that it is YCbCrK. This matches libjpeg's behavior.
     if (self.adobe_transform != .unknown) {
+        std.debug.print("here\n", .{});
         // Convert the YCbCr part of the YCbCrK to RGB, invert the RGB to get CMY,
         // and patch in the original K. The RGB to CMY inversion cancels out the
         // 'Adobe inversion' described above, so in practice, only the fourth channel (black) is inverted.
@@ -804,7 +816,6 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         return .{ .CMYK = &cmyk_img };
     }
 
-    // return error.CMYKImageNotSupported;
     // The first three channels (cyan, magenta, yellow) of the CMYK were decoded into self.img3,
     // but each channel was decoded into a separate slice, and some channels may be subsampled.
     // We interleave the separate channels into an image.CMYK's single []u8 slice containing
@@ -859,7 +870,7 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         }
     }
 
-    return .{ .CMYK = img };
+    return .{ .CMYK = &img };
 }
 
 //===================================//

@@ -509,15 +509,15 @@ pub const CMYKImage = struct {
     pub fn init(
         al: std.mem.Allocator,
         rect: Rectangle,
-    ) !*CMYKImage {
+    ) !CMYKImage {
         const pixel_len = pixelBufferLength(4, rect, "CMYK");
         const pixels = try al.alloc(u8, pixel_len);
-        var gray = CMYKImage{
+        const cmyk = CMYKImage{
             .pixels = pixels,
             .stride = @intCast(4 * rect.dX()),
             .rect = rect,
         };
-        return &gray;
+        return cmyk;
     }
 
     pub fn subImage(self: *CMYKImage, rect: Rectangle) !?CMYKImage {
