@@ -729,6 +729,14 @@ pub fn convertToRGB(self: *Decoder) !image.Image {
         else => return error.InvalidImageType,
     };
 
+    // We're going to allocate new memory for the CMYK image, so we can free the
+    // old image memory
+    defer {
+        if (self.img) |i| {
+            i.free(self.al);
+        }
+    }
+
     const c_scale: usize = @intCast(@divTrunc(self.component[0].h, self.component[1].h));
     const bounds = ycbcr_img.bounds();
     var img = try image.RGBAImage.init(self.al, bounds);
@@ -748,7 +756,7 @@ pub fn convertToRGB(self: *Decoder) !image.Image {
             img.pixels[po + 4 * i + 3] = 255;
         }
     }
-    return .{ .RGBA = img };
+    return .{ .RGBA = &img };
 }
 
 /// applyBlack combines self.img and self.black_pixels into a CMYK image.
@@ -786,7 +794,7 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         var img = try image.RGBAImage.init(self.al, bounds);
 
         _ = switch (self.img.?) {
-            .YCbCr => |*i| try imageutil.drawYCbCr(img, bounds, i, bounds.min),
+            .YCbCr => |*i| try imageutil.drawYCbCr(&img, bounds, i, bounds.min),
             else => unreachable,
         };
 

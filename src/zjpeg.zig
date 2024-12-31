@@ -84,7 +84,7 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
 
     const width = img.bounds().dX();
     const height = img.bounds().dY();
-    const scale_factor = 4;
+    const scale_factor = 0.5;
 
     const window_title = try std.fmt.allocPrintZ(al, "zjpeg view - {s}", .{file_name});
     defer al.free(window_title);
@@ -93,8 +93,8 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         window_title,
         sdl.SDL_WINDOWPOS_CENTERED,
         sdl.SDL_WINDOWPOS_CENTERED,
-        @intCast(@divTrunc(width, scale_factor)),
-        @intCast(@divTrunc(height, scale_factor)),
+        @as(i32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale_factor)),
+        @as(i32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale_factor)),
         sdl.SDL_WINDOW_SHOWN,
     );
     if (window == null) {
@@ -144,8 +144,9 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         var x = img.bounds().min.x;
         while (x < img.bounds().max.x) : (x += 1) {
             var color = switch (img) {
-                .YCbCr => |i| i.YCbCrAt(x, y),
-                .CMYK => |i| i.CMYKAt(x, y),
+                .YCbCr => |i| i.at(x, y),
+                .CMYK => |i| i.at(x, y),
+                .RGBA => |i| i.at(x, y),
                 else => unreachable,
             };
             const r, const g, const b, const a = color.toRGBA();

@@ -62,7 +62,7 @@ const Model = union(enum) {
 /// The conversion may be lossy.
 const Color = union(enum) {
     RGB: struct { r: u8, g: u8, b: u8 },
-    RGBA: struct { r: u8, g: u8, b: u8, a: u8 },
+    RGBA: struct { r: u32 = 0, g: u32 = 0, b: u32 = 0, a: u32 = 0 },
     YCbCr: struct { y: u8, cb: u8, cr: u8 },
     CMYK: struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 },
 
@@ -157,10 +157,10 @@ pub const Image = union(enum) {
 };
 
 pub const RGBAColor = struct {
-    r: usize = 0,
-    g: usize = 0,
-    b: usize = 0,
-    a: usize = 0,
+    r: u32 = 0,
+    g: u32 = 0,
+    b: u32 = 0,
+    a: u32 = 0,
 
     pub fn color(self: *RGBAColor) Color {
         return Color{ .RGBA = .{
@@ -180,15 +180,14 @@ pub const RGBAImage = struct {
     pub fn init(
         al: std.mem.Allocator,
         rect: Rectangle,
-    ) !*RGBAImage {
+    ) !RGBAImage {
         const pixel_len = pixelBufferLength(4, rect, "RGBA");
         const pixels = try al.alloc(u8, pixel_len);
-        var rgba = RGBAImage{
+        return RGBAImage{
             .pixels = pixels,
             .stride = @intCast(rect.dX() * 4),
             .rect = rect,
         };
-        return &rgba;
     }
 
     pub fn subImage(self: *RGBAImage, al: std.mem.Allocator, rect: Rectangle) !?*RGBAImage {
@@ -218,24 +217,23 @@ pub const RGBAImage = struct {
     }
 
     pub fn at(self: *RGBAImage, x: i32, y: i32) Color {
-        var rgba = self.rgbaAt(x, y);
-        return rgba.color();
+        return self.rgbaAt(x, y);
     }
 
-    pub fn rgbaAt(self: *RGBAImage, x: i32, y: i32) RGBAColor {
+    pub fn rgbaAt(self: *RGBAImage, x: i32, y: i32) Color {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            const rgba = RGBAColor{};
-            return rgba;
+            return Color{ .RGBA = .{} };
         }
         const i: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[i .. i + 4];
-        return RGBAColor{
-            .r = @as(u8, s[0]),
-            .g = @as(u8, s[1]),
-            .b = @as(u8, s[2]),
-            .a = @as(u8, s[3]),
+        var rgba = RGBAColor{
+            .r = @as(u32, s[0]),
+            .g = @as(u32, s[1]),
+            .b = @as(u32, s[2]),
+            .a = @as(u32, s[3]),
         };
+        return rgba.color();
     }
 };
 
@@ -376,7 +374,7 @@ pub const YCbCrImage = struct {
     pub fn bounds(self: YCbCrImage) Rectangle {
         return self.rect;
     }
-    pub fn at(self: *YCbCrImage, x: i32, y: i32) Color {
+    pub fn at(self: YCbCrImage, x: i32, y: i32) Color {
         return self.YCbCrAt(x, y);
     }
 
