@@ -147,7 +147,7 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
                 .YCbCr => |i| i.at(x, y),
                 .CMYK => |i| i.at(x, y),
                 .RGBA => |i| i.at(x, y),
-                else => unreachable,
+                .Gray => |i| i.at(x, y),
             };
             const r, const g, const b, const a = color.toRGBA();
 

@@ -24,35 +24,31 @@ const Model = union(enum) {
             .RGB => c, // No conversion needed for RGB.
             .YCbCr => {
                 const yuv = rgbToYCbCr(c.r, c.g, c.b);
-                var ycbcr = YCbCrColor{
-                    .y = yuv[0],
-                    .cb = yuv[1],
-                    .cr = yuv[2],
-                };
-                return ycbcr.color();
+                return Color.ycbcr(
+                    yuv[0],
+                    yuv[1],
+                    yuv[2],
+                );
             },
             .RGBA => {
                 const rgba = c.toRGBA();
-                var rbga = RGBAColor{
-                    .r = rgba[0],
-                    .g = rgba[1],
-                    .b = rgba[2],
-                    .a = rgba[3],
-                };
-                return rbga.color();
+                return Color.rgba(
+                    rgba[0],
+                    rgba[1],
+                    rgba[2],
+                    rgba[3],
+                );
             },
             .Gray => {
                 const rgba = c.toRGBA();
                 // Apply the grayscale formula (same coefficients as Go)
                 const y = @as(u8, @intCast((19595 * rgba[0] + 38470 * rgba[1] + 7471 * rgba[2] + (1 << 15)) >> 24));
-                var gc = GrayColor{ .y = y };
-                return gc.color();
+                return Color.gray(y);
             },
             .CMYK => {
                 const r, const g, const b, _ = c.toRGBA();
                 const cc, const mm, const yy, const kk = rgbToCmyk(@as(u8, r >> 8), @as(u8, g >> 8), @as(u8, b >> 8));
-                var cmyk = CMYKColor{ .c = cc, .m = mm, .y = yy, .k = kk };
-                return cmyk.color();
+                return Color.cmyk(cc, mm, yy, kk);
             },
         };
     }
@@ -61,10 +57,11 @@ const Model = union(enum) {
 /// Color can convert itself to alpha-premultiplied 16-bits per channel RGBA.
 /// The conversion may be lossy.
 const Color = union(enum) {
-    RGB: struct { r: u8, g: u8, b: u8 },
-    RGBA: struct { r: u32 = 0, g: u32 = 0, b: u32 = 0, a: u32 = 0 },
-    YCbCr: struct { y: u8, cb: u8, cr: u8 },
+    RGB: struct { r: u8 = 0, g: u8 = 0, b: u8 = 0 },
+    RGBA: struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 },
+    YCbCr: struct { y: u8 = 0, cb: u8 = 0, cr: u8 = 0 },
     CMYK: struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 },
+    Gray: struct { y: u8 = 0 },
 
     // RGBA returns the alpha-premultiplied red, green, blue and alpha values
     // for the color. Each value ranges within [0, 0xffff], but is represented
@@ -76,7 +73,17 @@ const Color = union(enum) {
     pub fn toRGBA(self: Color) struct { u32, u32, u32, u32 } {
         return switch (self) {
             .RGB => |c| .{ c.r, c.g, c.b, 255 },
-            .RGBA => |c| .{ c.r, c.g, c.b, c.a },
+            .RGBA => |c| {
+                var r: u32 = @intCast(c.r);
+                r |= r << 8;
+                var g: u32 = @intCast(c.g);
+                g |= g << 8;
+                var b: u32 = @intCast(c.b);
+                b |= b << 8;
+                var a: u32 = @intCast(c.a);
+                a |= a << 8;
+                return .{ r, g, b, a };
+            },
             .YCbCr => |c| {
                 // This code returns values in the range [0, 0xffff] instead of [0, 0xff]. There is a
                 // subtle difference between doing this and having YCbCr satisfy the Color
@@ -109,14 +116,35 @@ const Color = union(enum) {
                 const b = (0xffff - @as(u32, c.y) * 0x101) * w / 0xffff;
                 return .{ r, g, b, 0xffff };
             },
+            .Gray => |c| {
+                var y: u32 = @intCast(c.y);
+                y |= y << 8;
+                return .{ y, y, y, 0xffff };
+            },
         };
+    }
+
+    pub fn rgba(r: u8, g: u8, b: u8, a: u8) Color {
+        return Color{ .RGBA = .{ .r = r, .g = g, .b = b, .a = a } };
+    }
+
+    pub fn cmyk(c: u8, m: u8, y: u8, k: u8) Color {
+        return Color{ .CMYK = .{ .c = c, .m = m, .y = y, .k = k } };
+    }
+
+    pub fn gray(y: u8) Color {
+        return Color{ .Gray = .{ .y = y } };
+    }
+
+    pub fn ycbcr(y: u8, cb: u8, cr: u8) Color {
+        return Color{ .YCbCr = .{ .y = y, .cb = cb, .cr = cr } };
     }
 };
 
 /// Image is a finite rectangular grid of [Color] values taken from a color
 /// model.
 pub const Image = union(enum) {
-    Gray: *GrayImage,
+    Gray: GrayImage,
     YCbCr: YCbCrImage,
     RGBA: *RGBAImage,
     CMYK: *CMYKImage,
@@ -146,29 +174,13 @@ pub const Image = union(enum) {
 
     pub fn free(self: Image, al: std.mem.Allocator) void {
         switch (self) {
-            .Gray => {}, // Gray doesn't own memory explicitly
+            .Gray => |img| al.free(img.pixels),
             .YCbCr => |img| {
                 al.free(img.pixels);
             },
             .RGBA => |img| al.free(img.pixels),
             .CMYK => |img| al.free(img.pixels),
         }
-    }
-};
-
-pub const RGBAColor = struct {
-    r: u32 = 0,
-    g: u32 = 0,
-    b: u32 = 0,
-    a: u32 = 0,
-
-    pub fn color(self: *RGBAColor) Color {
-        return Color{ .RGBA = .{
-            .r = self.r,
-            .g = self.g,
-            .b = self.b,
-            .a = self.a,
-        } };
     }
 };
 
@@ -227,13 +239,12 @@ pub const RGBAImage = struct {
         }
         const i: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[i .. i + 4];
-        var rgba = RGBAColor{
-            .r = @as(u32, s[0]),
-            .g = @as(u32, s[1]),
-            .b = @as(u32, s[2]),
-            .a = @as(u32, s[3]),
-        };
-        return rgba.color();
+        return Color.rgba(
+            s[0],
+            s[1],
+            s[2],
+            s[3],
+        );
     }
 };
 
@@ -397,20 +408,6 @@ pub const YCbCrImage = struct {
     }
 };
 
-const YCbCrColor = struct {
-    y: u8 = 0,
-    cb: u8 = 0,
-    cr: u8 = 0,
-
-    pub fn color(self: *YCbCrColor) Color {
-        return Color{ .YCbCr = .{
-            .y = self.y,
-            .cb = self.cb,
-            .cr = self.cr,
-        } };
-    }
-};
-
 pub const GrayImage = struct {
     pixels: []u8 = undefined,
     stride: usize = 0,
@@ -419,83 +416,57 @@ pub const GrayImage = struct {
     pub fn init(
         al: std.mem.Allocator,
         rect: Rectangle,
-    ) !*GrayImage {
+    ) !GrayImage {
         const pixel_len = pixelBufferLength(1, rect, "Gray");
         const pixels = try al.alloc(u8, pixel_len);
-        var gray = GrayImage{
+        return GrayImage{
             .pixels = pixels,
             .stride = @intCast(rect.dX()),
             .rect = rect,
         };
-        return &gray;
     }
 
-    pub fn subImage(self: *GrayImage, al: std.mem.Allocator, rect: Rectangle) !?*GrayImage {
+    pub fn subImage(self: GrayImage, rect: Rectangle) !?GrayImage {
         if (rect.Intersect(self.rect)) |r| {
             const i: usize = @intCast(self.pixOffset(r.min.x, r.min.y));
-            const sub_img = try al.create(GrayImage);
-            sub_img.* = .{
+            return GrayImage{
                 .pixels = self.pixels[i..],
                 .stride = self.stride,
                 .rect = r,
             };
-            return sub_img;
+            // const grey = try al.create(GrayImage);
+            // sub_img.* = .{
+            //     .pixels = self.pixels[i..],
+            //     .stride = self.stride,
+            //     .rect = r,
+            // };
+            // return sub_img;
         } else {
             return null;
         }
     }
     // PixOffset returns the index of the first element of Pix that corresponds to
     // the pixel at (x, y).
-    pub fn pixOffset(self: *GrayImage, x: i32, y: i32) i32 {
+    pub fn pixOffset(self: GrayImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
         return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 1;
     }
 
-    pub fn bounds(self: *GrayImage) Rectangle {
+    pub fn bounds(self: GrayImage) Rectangle {
         return self.rect;
     }
 
-    pub fn at(self: *GrayImage, x: i32, y: i32) Color {
+    pub fn at(self: GrayImage, x: i32, y: i32) Color {
         return self.grayAt(x, y);
     }
 
-    fn grayAt(self: *GrayImage, x: i32, y: i32) Color {
+    fn grayAt(self: GrayImage, x: i32, y: i32) Color {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            var gc = GrayColor{};
-            return gc.color();
+            return Color.gray(0);
         }
         const i = self.pixOffset(x, y);
-        var gc = GrayColor{ .y = self.pixels[@intCast(i)] };
-        return gc.color();
-    }
-};
-
-const GrayColor = struct {
-    y: u8 = 0,
-
-    pub fn color(self: *GrayColor) Color {
-        return Color{ .RGB = .{
-            .r = self.y,
-            .g = self.y,
-            .b = self.y,
-        } };
-    }
-};
-
-const CMYKColor = struct {
-    c: u8 = 0,
-    m: u8 = 0,
-    y: u8 = 0,
-    k: u8 = 0,
-
-    pub fn color(self: *YCbCrColor) Color {
-        return Color{ .CMYK = .{
-            .c = self.c,
-            .m = self.m,
-            .y = self.y,
-            .k = self.k,
-        } };
+        return Color.gray(self.pixels[@intCast(i)]);
     }
 };
 
@@ -561,6 +532,7 @@ pub const CMYKImage = struct {
         } };
     }
 };
+
 /// rgbToYCbCr converts an RGB triple to a Y'CbCr triple.
 pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     // The JFIF specification says:

@@ -1694,14 +1694,14 @@ pub fn findRst(self: *Decoder, expected_rst: u8) !void {
 fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
     if (self.num_components == 1) {
         // Allocate a grayscale image if there's only one component.
-        const gray_image: *image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
+        const gray_image: image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
             0,
             0,
             8 * mxx,
             8 * myy,
         ));
         // Create a sub-image with the exact dimensions of the JPEG.
-        self.img = image.Image{ .Gray = try gray_image.subImage(self.al, image.Rectangle.init(
+        self.img = image.Image{ .Gray = try gray_image.subImage(image.Rectangle.init(
             0,
             0,
             @intCast(self.width),
