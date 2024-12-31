@@ -48,6 +48,12 @@ const Model = union(enum) {
                 var gc = GrayColor{ .y = y };
                 return gc.color();
             },
+            .CMYK => {
+                const r, const g, const b, _ = c.toRGBA();
+                const cc, const mm, const yy, const kk = rgbToCmyk(@as(u8, r >> 8), @as(u8, g >> 8), @as(u8, b >> 8));
+                var cmyk = CMYKColor{ .c = cc, .m = mm, .y = yy, .k = kk };
+                return cmyk.color();
+            },
         };
     }
 };
@@ -58,6 +64,7 @@ const Color = union(enum) {
     RGB: struct { r: u8, g: u8, b: u8 },
     RGBA: struct { r: u8, g: u8, b: u8, a: u8 },
     YCbCr: struct { y: u8, cb: u8, cr: u8 },
+    CMYK: struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 },
 
     // RGBA returns the alpha-premultiplied red, green, blue and alpha values
     // for the color. Each value ranges within [0, 0xffff], but is represented
@@ -66,7 +73,7 @@ const Color = union(enum) {
     //
     // An alpha-premultiplied color component c has been scaled by alpha (a),
     // so has valid values 0 <= c <= a.
-    pub fn toRGBA(self: Color) struct { u8, u8, u8, u8 } {
+    pub fn toRGBA(self: Color) struct { u32, u32, u32, u32 } {
         return switch (self) {
             .RGB => |c| .{ c.r, c.g, c.b, 255 },
             .RGBA => |c| .{ c.r, c.g, c.b, c.a },
@@ -75,17 +82,6 @@ const Color = union(enum) {
                 // subtle difference between doing this and having YCbCr satisfy the Color
                 // interface by first converting to an RGBA. The latter loses some
                 // information by going to and from 8 bits per channel.
-                //
-                // For example, this code:
-                //	const y, cb, cr = 0x7f, 0x7f, 0x7f
-                //	r, g, b := color.YCbCrToRGB(y, cb, cr)
-                //	r0, g0, b0, _ := color.YCbCr{y, cb, cr}.RGBA()
-                //	r1, g1, b1, _ := color.RGBA{r, g, b, 0xff}.RGBA()
-                //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r0, g0, b0)
-                //	fmt.Printf("0x%04x 0x%04x 0x%04x\n", r1, g1, b1)
-                // prints:
-                //	0x7e18 0x808d 0x7db9
-                //	0x7e7e 0x8080 0x7d7d
                 const yy1 = @as(i32, c.y) * 0x10101;
                 const cb1 = @as(i32, c.cb) - 128;
                 const cr1 = @as(i32, c.cr) - 128;
@@ -100,11 +96,18 @@ const Color = union(enum) {
                 b = if ((@as(u32, @bitCast(b)) & 0xff000000) == 0) b >> 8 else ~(@as(i32, b) >> 31) & 0xffff;
 
                 return .{
-                    @as(u8, @intCast(r >> 8)),
-                    @as(u8, @intCast(g >> 8)),
-                    @as(u8, @intCast(b >> 8)),
-                    255,
+                    @as(u32, @intCast(r)),
+                    @as(u32, @intCast(g)),
+                    @as(u32, @intCast(b)),
+                    0xffff,
                 };
+            },
+            .CMYK => |c| {
+                const w = 0xffff - @as(u32, c.k) * 0x101;
+                const r = (0xffff - @as(u32, c.c) * 0x101) * w / 0xffff;
+                const g = (0xffff - @as(u32, c.m) * 0x101) * w / 0xffff;
+                const b = (0xffff - @as(u32, c.y) * 0x101) * w / 0xffff;
+                return .{ r, g, b, 0xffff };
             },
         };
     }
@@ -116,6 +119,7 @@ pub const Image = union(enum) {
     Gray: *GrayImage,
     YCbCr: YCbCrImage,
     RGBA: *RGBAImage,
+    CMYK: *CMYKImage,
 
     // bounds returns the domain for which At can return non-zero color.
     // The bounds do not necessarily contain the point (0, 0).
@@ -124,6 +128,7 @@ pub const Image = union(enum) {
             .Gray => |img| img.bounds(),
             .YCbCr => |img| img.bounds(),
             .RGBA => |img| img.bounds(),
+            .CMYK => |img| img.bounds(),
         };
     }
 
@@ -135,6 +140,7 @@ pub const Image = union(enum) {
             .Gray => |img| img.at(x, y),
             .YCbCr => |img| img.at(x, y),
             .RGBA => |img| img.at(x, y),
+            .CMYK => |img| img.at(x, y),
         };
     }
 
@@ -145,6 +151,7 @@ pub const Image = union(enum) {
                 al.free(img.pixels);
             },
             .RGBA => |img| al.free(img.pixels),
+            .CMYK => |img| al.free(img.pixels),
         }
     }
 };
@@ -199,7 +206,7 @@ pub const RGBAImage = struct {
         }
     }
 
-    // PixOffset returns the index of the first element of Pix that corresponds to
+    // pixOffset returns the index of the first element of Pix that corresponds to
     // the pixel at (x, y).
     pub fn pixOffset(self: *RGBAImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
@@ -370,10 +377,7 @@ pub const YCbCrImage = struct {
         return self.rect;
     }
     pub fn at(self: *YCbCrImage, x: i32, y: i32) Color {
-        std.debug.print("at YCbCrImage\n", .{});
-        var ycbcr = self.YCbCrAt(x, y);
-        std.debug.print("here?\n", .{});
-        return ycbcr.color();
+        return self.YCbCrAt(x, y);
     }
 
     pub fn YCbCrAt(self: YCbCrImage, x: i32, y: i32) Color {
@@ -479,20 +483,86 @@ const GrayColor = struct {
             .b = self.y,
         } };
     }
+};
 
-    pub fn rgba(self: *GrayColor) struct { u32, u32, u32, u32 } {
-        const y: usize = @as(usize, self.y);
-        const expanded_y: u32 = @intCast(y | (y << 8)); // Expand 8-bit value to 16-bit
+const CMYKColor = struct {
+    c: u8 = 0,
+    m: u8 = 0,
+    y: u8 = 0,
+    k: u8 = 0,
 
-        return .{
-            expanded_y,
-            expanded_y,
-            expanded_y,
-            0xFF,
-        };
+    pub fn color(self: *YCbCrColor) Color {
+        return Color{ .CMYK = .{
+            .c = self.c,
+            .m = self.m,
+            .y = self.y,
+            .k = self.k,
+        } };
     }
 };
 
+pub const CMYKImage = struct {
+    pixels: []u8 = undefined,
+    stride: usize = 0,
+    rect: Rectangle = undefined,
+
+    pub fn init(
+        al: std.mem.Allocator,
+        rect: Rectangle,
+    ) !*CMYKImage {
+        const pixel_len = pixelBufferLength(4, rect, "CMYK");
+        const pixels = try al.alloc(u8, pixel_len);
+        var gray = CMYKImage{
+            .pixels = pixels,
+            .stride = @intCast(4 * rect.dX()),
+            .rect = rect,
+        };
+        return &gray;
+    }
+
+    pub fn subImage(self: *CMYKImage, rect: Rectangle) !?CMYKImage {
+        if (rect.Intersect(self.rect)) |r| {
+            const i: usize = @intCast(self.yOffset(r.min.x, r.min.y));
+
+            return CMYKImage{
+                .stride = self.stride,
+                .rect = r,
+                .pixels = self.pixels[i..],
+            };
+        } else {
+            return null;
+        }
+    }
+
+    // pixOffset returns the index of the first element of Pix that corresponds to
+    // the pixel at (x, y).
+    pub fn pixOffset(self: *CMYKImage, x: i32, y: i32) i32 {
+        const i: i32 = @intCast(self.stride);
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
+    }
+
+    pub fn bounds(self: CMYKImage) Rectangle {
+        return self.rect;
+    }
+    pub fn at(self: *CMYKImage, x: i32, y: i32) Color {
+        return self.CMYKAt(x, y);
+    }
+    pub fn CMYKAt(self: *CMYKImage, x: i32, y: i32) Color {
+        // Check if the point (x, y) is within the rectangle.
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return Color{ .CMYK = .{} };
+        }
+        const i: usize = @intCast(self.pixOffset(x, y));
+        const s = self.pixels[i .. i + 4];
+        return Color{ .CMYK = .{
+            .c = s[0],
+            .m = s[1],
+            .y = s[2],
+            .k = s[3],
+        } };
+    }
+};
 /// rgbToYCbCr converts an RGB triple to a Y'CbCr triple.
 pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     // The JFIF specification says:
@@ -543,6 +613,29 @@ pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     return .{ @intCast(yy), @intCast(cb), @intCast(cr) };
 }
 
+/// rgbToCmyk
+pub fn rgbToCmyk(r: u8, g: u8, b: u8) struct { u8, u8, u8, u8 } {
+    const rr: u32 = @intCast(r);
+    const gg: u32 = @intCast(g);
+    const bb: u32 = @intCast(b);
+    var w = rr;
+
+    if (w < gg) {
+        w = gg;
+    }
+    if (w < bb) {
+        w = bb;
+    }
+    if (w == 0) {
+        return .{ 0, 0, 0, 0xff };
+    }
+    const c = (w - rr) * 0xff / w;
+    const m = (w - gg) * 0xff / w;
+    const y = (w - bb) * 0xff / w;
+    const k = 0xff - w;
+
+    return .{ c, m, y, k };
+}
 /// pixelBufferLength returns the length of the []u8 typed pixels slice field.
 /// Conceptually, this is just (bpp * width * height),
 /// but this function panics if at least one of those is negative or if the

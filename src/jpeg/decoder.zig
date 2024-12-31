@@ -342,7 +342,7 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
         .YCbCr => |*ycbcr_img| {
             if (self.black_pixels) |_| {
                 // Black channel handling is not supported yet.
-                return error.BlackNotSupported;
+                return self.applyBlack();
             } else if (self.isRgb()) {
                 return try self.convertToRGB();
             }
@@ -752,7 +752,7 @@ pub fn convertToRGB(self: *Decoder) !image.Image {
     return .{ .RGBA = img };
 }
 
-/// applyBlack combines d.img3 and d.blackPix into a CMYK image.
+/// applyBlack combines self.img and self.black_pixels into a CMYK image.
 /// The formula used depends on whether the JPEG image is stored as CMYK or YCbCrK,
 /// indicated by the APP14 (Adobe) metadata.
 ///
@@ -770,83 +770,96 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         // Convert the YCbCr part of the YCbCrK to RGB, invert the RGB to get CMY,
         // and patch in the original K. The RGB to CMY inversion cancels out the
         // 'Adobe inversion' described above, so in practice, only the fourth channel (black) is inverted.
-
         const bounds = self.img.?.bounds();
         var img = try image.RGBAImage.init(self.al, bounds);
 
-        try imageutil.drawYCbCr(img, bounds, &self.img.?, bounds.min);
+        _ = switch (self.img.?) {
+            .YCbCr => |*i| try imageutil.drawYCbCr(img, bounds, i, bounds.min),
+            else => unreachable,
+        };
 
         var i_base: usize = 0;
         var y: i32 = bounds.min.y;
         while (y < bounds.max.y) {
-            y += 1;
-            i_base += img.stride;
             var i: usize = i_base + 3;
             var x: i32 = bounds.min.x;
             while (x < bounds.max.x) {
-                x += 1;
-                i += 4;
-
                 const y_delta: usize = @intCast(y - bounds.min.y);
                 const x_delta: usize = @intCast(x - bounds.min.x);
 
                 img.pixels[i] = 255 - self.black_pixels.?[y_delta * self.black_stride + x_delta];
+
+                x += 1;
+                i += 4;
             }
+
+            y += 1;
+            i_base += img.stride;
         }
 
-        // const cmyk_img = try self.al.create(image.CMYK);
-        // cmyk_img.* = .{
-        //     .pixels = img.pixels,
-        //     .stride = img.stride,
-        //     .rect = img.rect,
-        // };
-
-        // return @ptrCast(*image.Image, cmyk_img);
-        return error.CMYKImageNotSupported;
+        var cmyk_img = image.CMYKImage{};
+        cmyk_img.pixels = img.pixels;
+        cmyk_img.stride = img.stride;
+        cmyk_img.rect = img.rect;
+        return .{ .CMYK = &cmyk_img };
     }
 
-    return error.CMYKImageNotSupported;
+    // return error.CMYKImageNotSupported;
     // The first three channels (cyan, magenta, yellow) of the CMYK were decoded into self.img3,
     // but each channel was decoded into a separate slice, and some channels may be subsampled.
     // We interleave the separate channels into an image.CMYK's single []u8 slice containing
     // 4 contiguous bytes per pixel.
-    // const bounds = self.img3.?.bounds();
-    // var img = try image.CMYK.init(self.al, bounds);
+    const bounds = self.img.?.bounds();
+    var img = try image.CMYKImage.init(self.al, bounds);
 
-    // const translations = [_]struct {
-    //     src: []u8,
-    //     stride: usize,
-    // }{
-    //     .{ .src = self.img3.?.y, .stride = self.img3.?.y_stride },
-    //     .{ .src = self.img3.?.cb, .stride = self.img3.?.c_stride },
-    //     .{ .src = self.img3.?.cr, .stride = self.img3.?.c_stride },
-    //     .{ .src = self.black_pixels.?, .stride = self.black_stride },
-    // };
+    const Translations = struct {
+        src: []u8,
+        stride: usize,
+    };
+    var translations: [4]Translations = undefined;
 
-    // for (translations, 0..) |translation, t| {
-    //     const subsample = self.comp[t].h != self.comp[0].h or self.comp[t].v != self.comp[0].v;
+    switch (self.img.?) {
+        .YCbCr => |i| {
+            translations = [_]Translations{
+                .{ .src = i.y, .stride = i.y_stride },
+                .{ .src = i.cb, .stride = i.c_stride },
+                .{ .src = i.cr, .stride = i.c_stride },
+                .{ .src = self.black_pixels.?, .stride = self.black_stride },
+            };
+        },
+        else => unreachable,
+    }
 
-    //     var i_base: usize = 0;
-    //     var y: i32 = bounds.min.y;
-    //     while (y < bounds.max.y) : (y += 1, i_base += img.stride) {
-    //         var sy = y - bounds.min.y;
-    //         if (subsample) {
-    //             sy /= 2;
-    //         }
+    for (translations, 0..) |translation, t| {
+        const subsample = self.component[t].h != self.component[0].h or self.component[t].v != self.component[0].v;
 
-    //         var i: usize = i_base + t;
-    //         var x: i32 = bounds.min.x;
-    //         while (x < bounds.max.x) : (x += 1, i += 4) {
-    //             var sx = x - bounds.min.x;
-    //             if (subsample) {
-    //                 sx /= 2;
-    //             }
-    //             img.pixels[i] = 255 - translation.src[sy * translation.stride + sx];
-    //         }
-    //     }
-    // }
+        var i_base: usize = 0;
+        var y: i32 = bounds.min.y;
+        while (y < bounds.max.y) {
+            var sy: usize = @intCast(y - bounds.min.y);
+            if (subsample) {
+                sy >>= 1;
+            }
 
-    // return @ptrCast(*image.Image, img);
+            var i: usize = i_base + t;
+            var x: i32 = bounds.min.x;
+            while (x < bounds.max.x) {
+                var sx: usize = @intCast(x - bounds.min.x);
+                if (subsample) {
+                    sx >>= 1;
+                }
+                img.pixels[i] = 255 - translation.src[sy * translation.stride + sx];
+
+                i += 4;
+                x += 1;
+            }
+
+            y += 1;
+            i_base += img.stride;
+        }
+    }
+
+    return .{ .CMYK = img };
 }
 
 //===================================//

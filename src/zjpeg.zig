@@ -70,17 +70,12 @@ pub fn main() !void {
             };
             defer img.free(allocator);
 
-            switch (img) {
-                .YCbCr => |i| {
-                    try draw(allocator, arg, i);
-                },
-                else => return error.NotReadyYet,
-            }
+            try draw(allocator, arg, img);
         }
     }
 }
 
-fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.YCbCrImage) !void {
+fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
     if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
         std.debug.print("Failed to initialize SDL: {s}\n", .{sdl.SDL_GetError()});
         return;
@@ -148,17 +143,21 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.YCbCrImage) !vo
     while (y < img.bounds().max.y) : (y += 1) {
         var x = img.bounds().min.x;
         while (x < img.bounds().max.x) : (x += 1) {
-            var color = img.YCbCrAt(x, y);
+            var color = switch (img) {
+                .YCbCr => |i| i.YCbCrAt(x, y),
+                .CMYK => |i| i.CMYKAt(x, y),
+                else => unreachable,
+            };
             const r, const g, const b, const a = color.toRGBA();
 
             const row_offset = @as(usize, @intCast(y - img.bounds().min.y)) * row_length;
             const col_offset = @as(usize, @intCast(x - img.bounds().min.x)) * pixel_stride;
             const dst_index = row_offset + col_offset;
 
-            tex_data[dst_index + 0] = r;
-            tex_data[dst_index + 1] = g;
-            tex_data[dst_index + 2] = b;
-            tex_data[dst_index + 3] = a;
+            tex_data[dst_index + 0] = @intCast(r >> 8);
+            tex_data[dst_index + 1] = @intCast(g >> 8);
+            tex_data[dst_index + 2] = @intCast(b >> 8);
+            tex_data[dst_index + 3] = @intCast(a >> 8);
         }
     }
 

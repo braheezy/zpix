@@ -3,7 +3,7 @@
 A JPEG decoder in pure Zig. It supports:
 
 - Baseline and Progressive formats
-- Grey and YCbCr color formats.
+- Grey, YCbCr, and YCMK color formats.
 
 Here's proof. The Mac image viewer on the left, and a SDL image viewer in Zig using `zjpeg`:
 ![demo](demo.png)
