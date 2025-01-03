@@ -1,5 +1,5 @@
 const std = @import("std");
-const image = @import("image.zig");
+const image = @import("image/main.zig");
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -14,7 +14,6 @@ const helpText =
     \\Usage: zjpeg [options]] <jpeg file>
     \\Options:
     \\  -h, --help  Display this help message
-    \\  -c, --config-only  Decode and print the image configuration
 ;
 
 pub fn main() !void {
@@ -84,7 +83,9 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
 
     const width = img.bounds().dX();
     const height = img.bounds().dY();
-    const scale_factor = 0.5;
+    const desired_window_width = 400;
+    const desired_window_height = 300;
+    const scale_factor = @min(@as(f32, @floatFromInt(width)) / desired_window_width, @as(f32, @floatFromInt(height)) / desired_window_height);
 
     const window_title = try std.fmt.allocPrintZ(al, "zjpeg view - {s}", .{file_name});
     defer al.free(window_title);
