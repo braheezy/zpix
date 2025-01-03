@@ -2,8 +2,8 @@
 //! JPEG is defined in ITU-T T.81: https://www.w3.org/Graphics/JPEG/itu-t81.pdf.
 const std = @import("std");
 
-pub const image = @import("../image.zig");
-pub const imageutil = @import("../imageutil.zig");
+pub const image = @import("../image/main.zig");
+pub const imageutil = @import("../image/imageutil.zig");
 const idct = @import("idct.zig");
 const HuffTable = @import("HuffTable.zig");
 

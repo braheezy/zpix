@@ -1,7 +1,7 @@
-const image = @import("image.zig");
+const image = @import("main.zig");
 
-// DrawYCbCr draws the YCbCr source image on the RGBA destination image with
-// r.Min in dst aligned with sp in src. It reports whether the draw was
+// drawYCbCr draws the YCbCr source image on the RGBA destination image with
+// rect.min in dst aligned with sp in src. It reports whether the draw was
 // successful. If it returns false, no dst pixels were changed.
 //
 // This function assumes that r is entirely within dst's bounds and the
