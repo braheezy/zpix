@@ -17,3 +17,5 @@ pub const RGBAImage = image.RGBAImage;
 pub const YCbCrImage = image.YCbCrImage;
 pub const CMYKImage = image.CMYKImage;
 pub const YCbCrSubsample = image.YCbCrSubsample;
+
+pub const util = @import("util.zig");

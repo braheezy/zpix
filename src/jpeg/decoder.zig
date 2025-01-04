@@ -1,9 +1,7 @@
 //! JPEG Decoder module.
 //! JPEG is defined in ITU-T T.81: https://www.w3.org/Graphics/JPEG/itu-t81.pdf.
 const std = @import("std");
-
-pub const image = @import("../image/main.zig");
-pub const imageutil = @import("../image/imageutil.zig");
+const image = @import("../image/main.zig");
 const idct = @import("idct.zig");
 const HuffTable = @import("HuffTable.zig");
 
@@ -84,7 +82,7 @@ const unzig: [idct.block_size]u8 = [_]u8{
 };
 
 /// Main decoder struct.
-const Decoder = @This();
+pub const Decoder = @This();
 
 /// Bits holds the unprocessed bits that have been taken from the byte-stream.
 /// The n least significant bits of a form the unread bits, to be read in MSB to
@@ -217,6 +215,17 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
 }
 
 fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
+    errdefer {
+        // If there's errors during decoding, free allocated memory
+        // to prevent leaks.
+        if (self.img != null) {
+            self.img.?.free(self.al);
+        }
+        if (self.black_pixels != null) {
+            self.al.free(self.black_pixels.?);
+        }
+    }
+
     try self.readFull(self.tmp[0..2]);
 
     // Check for the Start of Image marker.
@@ -301,6 +310,13 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
                     try self.ignore(n);
                 } else {
                     try self.processDqt(n);
+                }
+            },
+            .dri => {
+                if (config_only) {
+                    try self.ignore(n);
+                } else {
+                    try self.processDri(n);
                 }
             },
             .dht => {
@@ -445,7 +461,7 @@ fn fill(self: *Decoder) !void {
     }
 
     // Fill the rest of the buffer.
-    const n = try self.r.read(self.bytes.buffer[self.bytes.j..]);
+    const n = try self.r.readAll(self.bytes.buffer[self.bytes.j..]);
     self.bytes.j += n;
 
     if (n == 0) {
@@ -599,6 +615,14 @@ fn processSof(self: *Decoder, n: i32) !void {
     }
 }
 
+// Specified in section B.2.4.4.
+fn processDri(self: *Decoder, n: i32) !void {
+    if (n != 2) {
+        return error.DriWrongLength;
+    }
+    try self.readFull(self.tmp[0..2]);
+    self.restart_interval = (@as(u16, @as(u16, self.tmp[0]) << 8)) + @as(u16, self.tmp[1]);
+}
 // covered in section B.2.4.1
 fn processDqt(self: *Decoder, n: i32) !void {
     var local_n = n;
@@ -612,7 +636,7 @@ fn processDqt(self: *Decoder, n: i32) !void {
         switch (quant_info >> 4) {
             0 => {
                 if (local_n < idct.block_size) {
-                    return error.BadPqValue;
+                    break :loop;
                 }
                 local_n -= idct.block_size;
                 try self.readFull(self.tmp[0..idct.block_size]);
@@ -794,7 +818,7 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         var img = try image.RGBAImage.init(self.al, bounds);
 
         _ = switch (self.img.?) {
-            .YCbCr => |*i| try imageutil.drawYCbCr(&img, bounds, i, bounds.min),
+            .YCbCr => |*i| try image.util.drawYCbCr(&img, bounds, i, bounds.min),
             else => unreachable,
         };
 
@@ -1753,3 +1777,495 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
 //===================================//
 // # End Scan Processing
 //===================================//
+
+//===================================//
+// # Tests
+//===================================//
+const testing = std.testing;
+
+fn decodeFile(path: []const u8) !image.Image {
+    const jpeg_file = try std.fs.cwd().openFile(path, .{});
+    defer jpeg_file.close();
+
+    var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
+    const reader = bufferedReader.reader().any();
+    return try decode(std.testing.allocator, reader);
+}
+
+fn check(bounds: image.Rectangle, pix0: []u8, pix1: []u8, stride0: usize, stride1: usize) !void {
+    if (stride0 <= 0 or @mod(stride0, 8) != 0) {
+        return error.InvalidStride;
+    }
+    if (stride1 <= 0 or @mod(stride1, 8) != 0) {
+        return error.InvalidStride;
+    }
+    // Compare the two pix data, one 8x8 block at a time.
+    var y: usize = 0;
+    while (y < pix0.len / stride0 and y < pix1.len / stride1) : (y += 8) {
+        var x: usize = 0;
+        while (x < stride0 and x < stride1) : (x += 8) {
+            if (x >= bounds.max.x or y >= bounds.max.y) {
+                // We don't care if the two pix data differ if the 8x8 block is
+                // entirely outside of the image's bounds. For example, this can
+                // occur with a 4:2:0 chroma subsampling and a 1x1 image. Baseline
+                // decoding works on the one 16x16 MCU as a whole; progressive
+                // decoding's first pass works on that 16x16 MCU as a whole but
+                // refinement passes only process one 8x8 block within the MCU.
+                continue;
+            }
+
+            for (0..8) |j| {
+                for (0..8) |i| {
+                    const index0 = (y + j) * stride0 + (x + i);
+                    const index1 = (y + j) * stride1 + (x + i);
+                    if (pix0[index0] != pix1[index1]) {
+                        return error.InvalidPixData;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn readerFromSlice(data: []const u8) std.io.AnyReader {
+    var stream = std.io.fixedBufferStream(data);
+    return stream.reader().any();
+}
+
+test "decode + progressive" {
+    const al = std.testing.allocator;
+    const test_cases = [_][]const u8{
+        "src/testdata/video-001",
+        "src/testdata/video-001.q50.410",
+        "src/testdata/video-001.q50.411",
+        "src/testdata/video-001.q50.420",
+        "src/testdata/video-001.q50.422",
+        "src/testdata/video-001.q50.440",
+        "src/testdata/video-001.q50.444",
+        "src/testdata/video-005.gray.q50",
+        "src/testdata/video-005.gray.q50.2x2",
+        "src/testdata/video-001.separate.dc.progression",
+    };
+    var i: usize = 0;
+    while (i < test_cases.len) : (i += 1) {
+        const path = test_cases[i];
+
+        var file_name = try std.fmt.allocPrint(al, "{s}{s}", .{ path, ".jpeg" });
+        const img1 = try decodeFile(file_name);
+        al.free(file_name);
+        defer img1.free(al);
+        file_name = try std.fmt.allocPrint(al, "{s}{s}", .{ path, ".progressive.jpeg" });
+        const img2 = try decodeFile(file_name);
+        defer img2.free(al);
+        defer al.free(file_name);
+
+        try testing.expectEqual(img1.bounds(), img2.bounds());
+        try testing.expectEqual(img1.bounds(), image.Rectangle{
+            .min = image.Point{ .x = 0, .y = 0 },
+            .max = image.Point{ .x = 150, .y = 103 },
+        });
+
+        switch (img1) {
+            .Gray => |m0| {
+                const m1 = switch (img2) {
+                    .Gray => |m| m,
+                    else => return error.InvalidImageType,
+                };
+                try check(
+                    m0.bounds(),
+                    m0.pixels,
+                    m1.pixels,
+                    m0.stride,
+                    m1.stride,
+                );
+            },
+            .YCbCr => |m0| {
+                const m1 = switch (img2) {
+                    .YCbCr => |m| m,
+                    else => return error.InvalidImageType,
+                };
+                try check(
+                    m0.bounds(),
+                    m0.y,
+                    m1.y,
+                    m0.y_stride,
+                    m1.y_stride,
+                );
+                try check(
+                    m0.bounds(),
+                    m0.cb,
+                    m1.cb,
+                    m0.c_stride,
+                    m1.c_stride,
+                );
+                try check(
+                    m0.bounds(),
+                    m0.cr,
+                    m1.cr,
+                    m0.c_stride,
+                    m1.c_stride,
+                );
+            },
+            else => return error.InvalidImageType,
+        }
+    }
+}
+
+test "decode assorted" {
+    const al = std.testing.allocator;
+    const test_cases = [_][]const u8{
+        "src/testdata/video-001.cmyk",
+        "src/testdata/video-001.221212",
+        "src/testdata/video-005.gray",
+        "src/testdata/video-001.rgb",
+        "src/testdata/video-001.separate.dc.progression",
+    };
+    var i: usize = 0;
+    while (i < test_cases.len) : (i += 1) {
+        const path = test_cases[i];
+
+        const file_name = try std.fmt.allocPrint(al, "{s}{s}", .{ path, ".jpeg" });
+        const img1 = try decodeFile(file_name);
+        al.free(file_name);
+        img1.free(al);
+    }
+}
+
+test "truncated SOS doesn't panic" {
+    const al = std.testing.allocator;
+    const path = "src/testdata/video-005.gray.q50.jpeg";
+
+    const b = try std.fs.cwd().readFileAlloc(al, path, 100000);
+    defer al.free(b);
+
+    const sos_marker = [_]u8{ 0xff, 0xda };
+    var i = std.mem.indexOf(u8, b, &sos_marker) orelse return error.SOSMarkerNotFound;
+    i += 2;
+    var j = i + 10;
+    if (j > b.len) {
+        j = b.len;
+    }
+    while (i < j) : (i += 1) {
+        var stream = std.io.fixedBufferStream(b[0..i]);
+        const reader = stream.reader().any();
+
+        const result = decode(al, reader);
+        try testing.expectError(error.UnexpectedEof, result);
+    }
+}
+
+test "large image with short data" {
+    const al = std.testing.allocator;
+
+    // This input is an invalid JPEG image, based on the fuzzer-generated image
+    // in issue 10413. It is only 504 bytes, and shouldn't take long for Decode
+    // to return an error. The Start Of Frame marker gives the image dimensions
+    // as 8192 wide and 8192 high, so even if an unreadByteStuffedByte bug
+    // doesn't technically lead to an infinite loop, such a bug can still cause
+    // an unreasonably long loop for such a short input.
+    const input: []const u8 = &[_]u8{
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+        0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
+        0x00, 0x10, 0x0b, 0x0c, 0x0e, 0x0c, 0x0a, 0x10, 0x0e, 0x89, 0x0e, 0x12,
+        0x11, 0x10, 0x13, 0x18, 0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
+        0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0xff, 0xdb, 0x00, 0x43, 0x00, 0x10, 0x0b, 0x0c, 0x0e, 0x0c, 0x0a, 0x10,
+        0x0e, 0x0d, 0x0e, 0x12, 0x11, 0x10, 0x13, 0x18, 0x28, 0x1a, 0x18, 0x16,
+        0x16, 0x18, 0x31, 0x23, 0x25, 0x1d, 0x28, 0x3a, 0x33, 0x3d, 0x3c, 0x39,
+        0x33, 0x38, 0x37, 0x40, 0x48, 0x5c, 0x4e, 0x40, 0x44, 0x57, 0x45, 0x37,
+        0x38, 0x50, 0x6d, 0x51, 0x57, 0x5f, 0x62, 0x67, 0x68, 0x67, 0x3e, 0x4d,
+        0x71, 0x79, 0x70, 0x64, 0x78, 0x5c, 0x65, 0x67, 0x63, 0xff, 0xc0, 0x00,
+        0x0b, 0x08, 0x20, 0x00, 0x20, 0x00, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4,
+        0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x10,
+        0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04,
+        0x00, 0x00, 0x01, 0x7d, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
+        0x21, 0x31, 0x01, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32,
+        0x81, 0x91, 0xa1, 0x08, 0x23, 0xd8, 0xff, 0xdd, 0x42, 0xb1, 0xc1, 0x15,
+        0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36,
+        0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
+        0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x00, 0x63, 0x64, 0x65,
+        0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+        0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94,
+        0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+        0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba,
+        0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10,
+        0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x10, 0x0b, 0x0c, 0x0e, 0x0c,
+        0x0a, 0x10, 0x0e, 0x0d, 0x0e, 0x12, 0x11, 0x10, 0x13, 0x18, 0x28, 0x1a,
+        0x18, 0x16, 0x16, 0x18, 0x31, 0x23, 0x25, 0x1d, 0xc8, 0xc9, 0xca, 0xd2,
+        0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4,
+        0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
+        0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00,
+        0x3f, 0x00, 0xb9, 0xeb, 0x50, 0xb0, 0xdb, 0xc8, 0xa8, 0xe4, 0x63, 0x80,
+        0xdd, 0x31, 0xd6, 0x9d, 0xbb, 0xf2, 0xc5, 0x42, 0x1f, 0x6c, 0x6f, 0xf4,
+        0x34, 0xdd, 0x3c, 0xfc, 0xac, 0xe7, 0x3d, 0x80, 0xa9, 0xcc, 0x87, 0x34,
+        0xb3, 0x37, 0xfa, 0x2b, 0x9f, 0x6a, 0xad, 0x63, 0x20, 0x36, 0x9f, 0x78,
+        0x64, 0x75, 0xe6, 0xab, 0x7d, 0xb2, 0xde, 0x29, 0x70, 0xd3, 0x20, 0x27,
+        0xde, 0xaf, 0xa4, 0xf0, 0xca, 0x9f, 0x24, 0xa8, 0xdf, 0x46, 0xa8, 0x24,
+        0x84, 0x96, 0xe3, 0x77, 0xf9, 0x2e, 0xe0, 0x0a, 0x62, 0x7f, 0xdf, 0xd9,
+    };
+
+    // Wrap the input in a fixed buffer stream to simulate a reader.
+    var stream = std.io.fixedBufferStream(input);
+    const reader = stream.reader().any();
+
+    // Attempt to decode the JPEG image.
+    const decode_result = decode(al, reader);
+
+    try testing.expectError(error.UnexpectedEof, decode_result);
+}
+
+test "padded rst marker" {
+    // This test image comes from golang.org/issue/28717
+    const base64EncodedImage =
+        \\/9j/4AAhQVZJMQABAQEAeAB4AAAAAAAAAAAAAAAAAAAAAAAAAP/bAEMABAIDAwMCBAMDAwQEBAQGCgYG
+        \\BQUGDAgJBwoODA8PDgwODxASFxMQERURDQ4UGhQVFxgZGhkPExweHBkeFxkZGP/bAEMBBAQEBgUGCwYG
+        \\CxgQDhAYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGP/EAaIA
+        \\AAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKCxAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1Fh
+        \\ByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNk
+        \\ZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT
+        \\1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6AQADAQEBAQEBAQEBAAAAAAAAAQIDBAUGBwgJCgsRAAIB
+        \\AgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBka
+        \\JicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZ
+        \\mqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/dAAQA
+        \\Cv/gAAQAAP/AABEIALABQAMBIQACEQEDEQH/2gAMAwEAAhEDEQA/APnCFTk5BPPGKliAB718W7H2j3Ip
+        \\VUuwJxzTfKXacde9VBhYRUBAyO3pTmUAbSMU5WGmybywzHGAMdelPVFC+n1qXZCuyaJADxjj2qzbBMAP
+        \\xz1rKaVib6ltLcFvlIx2pLy0dwuAMMBnH1rFON9RNsszAZPFEYHldPzrOy3KewmBk9qUABugxjtTVmiW
+        \\xWRcjp+VJtHXgVL3K6AgBDdM9eRTNzAZViOe1VyxaJavuf/Q8aW4mUcSGpo764AyHz+FfnnJBvVH1UsN
+        \\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
+        \\Sqm7JH//2Q==
+    ;
+
+    const codecs = std.base64.standard;
+    const dec = codecs.decoderWithIgnore("\n");
+
+    // const decoder = std.base64.Base64Decoder.init(std.base64.standard.alphabet_chars, null);
+    var buffer: [0x10000]u8 = undefined;
+    const decoded = buffer[0..try dec.calcSizeUpperBound(base64EncodedImage.len)];
+    _ = try dec.decode(decoded, base64EncodedImage);
+
+    // std.log.warn("\n\ndecoded_data.len: {d}\n\n", .{decoded_data.len});
+
+    var stream = std.io.fixedBufferStream(decoded);
+    const reader = stream.reader().any();
+
+    // Attempt to decode the JPEG image.
+    const img = try decode(testing.allocator, reader);
+    img.free(testing.allocator);
+}
+
+test "Issue56724: Decode truncated JPEG should return UnexpectedEof" {
+    const allocator = testing.allocator;
+
+    // **1. Read the JPEG File**
+    const file_path = "src/testdata/video-001.jpeg";
+
+    // Open the file in read-only mode
+    const file_data = try std.fs.cwd().readFileAlloc(allocator, file_path, 17000000);
+    defer allocator.free(file_data);
+
+    // **2. Truncate the Data to First 24 Bytes**
+    const truncated_data = file_data[0..24];
+    var stream = std.io.fixedBufferStream(truncated_data);
+    const reader = stream.reader().any();
+
+    // **3. Attempt to Decode the Truncated JPEG Data**
+    const decode_result = decode(allocator, reader);
+
+    try testing.expectError(error.UnexpectedEof, decode_result);
+}
+
+test "bad restart marker" {
+    const allocator = testing.allocator;
+
+    // **1. Read the JPEG File**
+    const file_path = "src/testdata/video-001.restart2.jpeg";
+
+    // Open the file in read-only mode
+    const file_data = try std.fs.cwd().readFileAlloc(allocator, file_path, 17000000);
+    defer allocator.free(file_data);
+
+    try testing.expectEqual(file_data.len, 4855);
+    try testing.expect(file_data[2816] == 0xff and file_data[2817] == 0xd1);
+
+    const prefix = file_data[0..2816];
+    const suffix = file_data[2816..];
+
+    const test_cases = [_][]const u8{
+        "PASS:",
+        "PASS:\x00",
+        "PASS:\x61",
+        "PASS:\x61\x62\x63\xff\x00\x64",
+        "PASS:\xff",
+        "PASS:\xff\x00",
+        "PASS:\xff\xff\xff\x00\xff\x00\x00\xff\xff\xff",
+
+        "FAIL:\xff\x03",
+        "FAIL:\xff\xd5",
+        "FAIL:\xff\xff\xd5",
+    };
+    for (test_cases) |tc| {
+        const want_pass = std.mem.eql(u8, tc[0..5], "PASS:");
+        const infix = tc[5..];
+
+        var data = std.ArrayList(u8).init(allocator);
+        defer data.deinit();
+
+        try data.appendSlice(prefix);
+        try data.appendSlice(infix);
+        try data.appendSlice(suffix);
+
+        const reader = readerFromSlice(data.items);
+
+        const result = decode(allocator, reader);
+
+        if (want_pass) {
+            const img = try result;
+            img.free(allocator);
+        } else {
+            try testing.expectError(error.BadRSTMarker, result);
+        }
+    }
+}

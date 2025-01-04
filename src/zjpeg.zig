@@ -1,5 +1,5 @@
 const std = @import("std");
-const image = @import("image/main.zig");
+pub const image = @import("image/main.zig");
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -179,4 +179,8 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
         sdl.SDL_RenderPresent(renderer);
     }
+}
+
+test {
+    @import("std").testing.refAllDecls(@This());
 }
