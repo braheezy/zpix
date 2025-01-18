@@ -1,21 +1,9 @@
 .{
     .name = "zjpeg",
 
-    .version = "0.0.0",
+    .version = "0.1.0",
 
-    // Specifies the set of files and directories that are included in this package.
-    // Only files and directories listed here are included in the `hash` that
-    // is computed for this package. Only files listed here will remain on disk
-    // when using the zig package manager. As a rule of thumb, one should list
-    // files required for compilation plus any license(s).
-    // Paths are relative to the build root. Use the empty string (`""`) to refer to
-    // the build root itself.
-    // A directory listed here means that all files within, recursively, are included.
     .dependencies = .{
-        .zigimg = .{
-            .url = "https://github.com/zigimg/zigimg/archive/5b5d718.tar.gz",
-            .hash = "122040d9cc905342547e1e9da227a7f16fae5e7ae23134cb62aaef64c5b2c4f58828",
-        },
         .SDL = .{
             .url = "https://github.com/allyourcodebase/SDL/archive/7e4fc30b201d266f197fef4153f7e046bd189a7c.tar.gz",
             .hash = "1220c57b0bec66a2378e90cd7a79e36f9e7f60c02acca769ab3e6f974d4ef6766418",
