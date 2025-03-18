@@ -4,11 +4,30 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "zjpeg",
+    const jpeg_module = b.addModule("jpeg", .{
+        .root_source_file = b.path("src/jpeg/decoder.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const image_module = b.addModule("image", .{
+        .root_source_file = b.path("src/image/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/zjpeg.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    jpeg_module.addImport("image", image_module);
+    root_module.addImport("jpeg", jpeg_module);
+    root_module.addImport("image", image_module);
+
+    const exe = b.addExecutable(.{
+        .name = "zjpeg",
+        .root_module = root_module,
     });
 
     // Dependencies
@@ -26,31 +45,16 @@ pub fn build(b: *std.Build) !void {
 
     const run_cmd = b.addRunArtifact(exe);
 
-    // By making the run step depend on the install step, it will be run from the
-    // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
-    // files, this ensures they will be present and in the expected location.
     run_cmd.step.dependOn(b.getInstallStep());
 
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build run`
-    // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
-    const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/zjpeg.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const exe_unit_tests = b.addTest(.{ .root_module = root_module });
 
     exe_unit_tests.linkLibrary(sdl_artifact);
 

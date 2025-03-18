@@ -131,9 +131,9 @@ const Model = union(enum) {
 /// rgbToYCbCr converts an RGB triple to a Y'CbCr triple.
 pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     // The JFIF specification says:
-    //	Y' =  0.2990*R + 0.5870*G + 0.1140*B
-    //	Cb = -0.1687*R - 0.3313*G + 0.5000*B + 128
-    //	Cr =  0.5000*R - 0.4187*G - 0.0813*B + 128
+    //  Y' =  0.2990*R + 0.5870*G + 0.1140*B
+    //  Cb = -0.1687*R - 0.3313*G + 0.5000*B + 128
+    //  Cr =  0.5000*R - 0.4187*G - 0.0813*B + 128
     // https://www.w3.org/Graphics/JPEG/jfif3.pdf says Y but means Y'.
 
     const r1: i32 = @intCast(r);

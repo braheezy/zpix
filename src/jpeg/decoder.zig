@@ -1,7 +1,7 @@
 //! JPEG Decoder module.
 //! JPEG is defined in ITU-T T.81: https://www.w3.org/Graphics/JPEG/itu-t81.pdf.
 const std = @import("std");
-const image = @import("../image/main.zig");
+const image = @import("image");
 const idct = @import("idct.zig");
 const HuffTable = @import("HuffTable.zig");
 
@@ -596,10 +596,10 @@ fn processSof(self: *Decoder, n: i32) !void {
                 // Theoretically, 4-component JPEG images could mix and match hv values
                 // but in practice, those two combinations are the only ones in use,
                 // and it simplifies the applyBlack code below if we can assume that:
-                //	- for CMYK, the C and K channels have full samples, and if the M
-                //	  and Y channels subsample, they subsample both horizontally and
-                //	  vertically.
-                //	- for YCbCrK, the Y and K channels have full samples.
+                //  - for CMYK, the C and K channels have full samples, and if the M
+                //    and Y channels subsample, they subsample both horizontally and
+                //    vertically.
+                //  - for YCbCrK, the Y and K channels have full samples.
                 switch (i) {
                     0 => if (hv_sampling != 0x11 and hv_sampling != 0x22) return error.LumaChromaSubSamplingRatio,
                     1, 2 => if (hv_sampling != 0x11) return error.LumaChromaSubSamplingRatio,
@@ -1307,14 +1307,14 @@ fn processSos(self: *Decoder, n: i32) !void {
                     // subsampling, there are four Y 8x8 blocks in every 16x16 MCU.
                     //
                     // For a sequential 32x16 pixel image, the Y blocks visiting order is:
-                    //	0 1 4 5
-                    //	2 3 6 7
+                    //  0 1 4 5
+                    //  2 3 6 7
                     //
                     // For progressive images, the interleaved scans (those with nComp > 1)
                     // are traversed as above, but non-interleaved scans are traversed left
                     // to right, top to bottom:
-                    //	0 1 2 3
-                    //	4 5 6 7
+                    //  0 1 2 3
+                    //  4 5 6 7
                     // Only DC scans (zigStart == 0) can be interleaved. AC scans must have
                     // only one component.
                     //
@@ -1323,11 +1323,11 @@ fn processSos(self: *Decoder, n: i32) !void {
                     // outside the image at the pixel level. For example, a 24x16 pixel 4:2:0
                     // progressive image consists of two 16x16 MCUs. The interleaved scans
                     // will process 8 Y blocks:
-                    //	0 1 4 5
-                    //	2 3 6 7
+                    //  0 1 4 5
+                    //  2 3 6 7
                     // The non-interleaved scans will process only 6 Y blocks:
-                    //	0 1 2
-                    //	3 4 5
+                    //  0 1 2
+                    //  3 4 5
                     if (n_comp != 1) {
                         bx = hi * @as(i32, @intCast(mx)) + @mod(@as(i32, @intCast(j)), hi);
                         by = vi * @as(i32, @intCast(my)) + @divTrunc(@as(i32, @intCast(j)), hi);

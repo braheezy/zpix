@@ -1,12 +1,11 @@
 const std = @import("std");
-pub const image = @import("image/main.zig");
+pub const image = @import("image");
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-pub const jpeg = @import("jpeg/decoder.zig");
-pub const Decoder = jpeg.Decoder;
+const jpeg = @import("jpeg");
 
 const print = std.debug.print;
 
@@ -36,15 +35,12 @@ pub fn main() !void {
         // EX_USAGE: command line usage error
         std.process.exit(64);
     }
-    // var isConfigOnlyFlag: bool = false;
 
     // handle CLI arguments
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.print(helpText, .{});
             std.process.exit(0);
-            // } else if (std.mem.eql(u8, arg, "--config-only") or std.mem.eql(u8, arg, "-c")) {
-            //     isConfigOnlyFlag = true;
         } else {
             // assume input file
             const jpeg_file = std.fs.cwd().openFile(arg, .{}) catch |err| {
@@ -56,12 +52,6 @@ pub fn main() !void {
 
             var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
             const reader = bufferedReader.reader().any();
-
-            // if (isConfigOnlyFlag) {
-            //     const img_config = try jpeg.decodeConfig(reader);
-            //     print("Image config: {any}\n", .{img_config});
-            //     std.process.exit(0);
-            // }
 
             const img = jpeg.decode(allocator, reader) catch |err| {
                 std.log.err("Failed to decode jpeg file: {any}", .{err});
