@@ -125,32 +125,17 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         return;
     }
 
+    const pixels = try img.rgbaPixels(al);
+    defer al.free(pixels);
+
     const tex_data: [*]u8 = @ptrCast(tex_pixels);
-    const row_length = @as(usize, @intCast(pitch));
-    // RGBA is 4 bytes per pixel
-    const pixel_stride = 4;
 
-    var y = img.bounds().min.y;
-    while (y < img.bounds().max.y) : (y += 1) {
-        var x = img.bounds().min.x;
-        while (x < img.bounds().max.x) : (x += 1) {
-            var color = switch (img) {
-                .YCbCr => |i| i.at(x, y),
-                .CMYK => |i| i.at(x, y),
-                .RGBA => |i| i.at(x, y),
-                .Gray => |i| i.at(x, y),
-            };
-            const r, const g, const b, const a = color.toRGBA();
-
-            const row_offset = @as(usize, @intCast(y - img.bounds().min.y)) * row_length;
-            const col_offset = @as(usize, @intCast(x - img.bounds().min.x)) * pixel_stride;
-            const dst_index = row_offset + col_offset;
-
-            tex_data[dst_index + 0] = @intCast(r >> 8);
-            tex_data[dst_index + 1] = @intCast(g >> 8);
-            tex_data[dst_index + 2] = @intCast(b >> 8);
-            tex_data[dst_index + 3] = @intCast(a >> 8);
-        }
+    var i: usize = 0;
+    while (i < pixels.len) : (i += 4) {
+        tex_data[i + 0] = pixels[i + 0];
+        tex_data[i + 1] = pixels[i + 1];
+        tex_data[i + 2] = pixels[i + 2];
+        tex_data[i + 3] = pixels[i + 3];
     }
 
     sdl.SDL_UnlockTexture(texture);

@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const jpeg_module = b.addModule("jpeg", .{
-        .root_source_file = b.path("src/jpeg/decoder.zig"),
+        .root_source_file = b.path("src/jpeg/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -31,11 +31,11 @@ pub fn build(b: *std.Build) !void {
     });
 
     // Dependencies
-    const sdl_dep = b.dependency("SDL", .{
+    const sdl_dep = b.lazyDependency("SDL", .{
         .optimize = optimize,
         .target = target,
     });
-    const sdl_artifact = sdl_dep.artifact("SDL2");
+    const sdl_artifact = sdl_dep.?.artifact("SDL2");
     for (sdl_artifact.root_module.include_dirs.items) |include_dir| {
         try exe.root_module.include_dirs.append(b.allocator, include_dir);
     }

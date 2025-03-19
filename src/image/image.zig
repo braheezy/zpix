@@ -53,6 +53,37 @@ pub const Image = union(enum) {
             .CMYK => |img| al.free(img.pixels),
         }
     }
+
+    /// Returns the pixels in RGBA format (8 bits per channel), regardless of the source format.
+    /// Caller owns the returned memory and must free it.
+    pub fn rgbaPixels(self: Image, al: std.mem.Allocator) ![]u8 {
+        const rect = self.bounds();
+        const width = rect.dX();
+        const height = rect.dY();
+        const pixel_count = @as(usize, @intCast(width * height));
+        const rgba_len = pixel_count * 4;
+
+        var rgba_pixels = try al.alloc(u8, rgba_len);
+        errdefer al.free(rgba_pixels);
+
+        var y: i32 = rect.min.y;
+        while (y < rect.max.y) : (y += 1) {
+            var x: i32 = rect.min.x;
+            while (x < rect.max.x) : (x += 1) {
+                const color = self.at(x, y);
+                const rgba = color.toRGBA();
+                const i = @as(usize, @intCast((y - rect.min.y) * width + (x - rect.min.x))) * 4;
+
+                // Convert from 16-bit per channel to 8-bit per channel
+                rgba_pixels[i + 0] = @intCast(rgba[0] >> 8); // R
+                rgba_pixels[i + 1] = @intCast(rgba[1] >> 8); // G
+                rgba_pixels[i + 2] = @intCast(rgba[2] >> 8); // B
+                rgba_pixels[i + 3] = @intCast(rgba[3] >> 8); // A
+            }
+        }
+
+        return rgba_pixels;
+    }
 };
 
 pub const RGBAImage = struct {

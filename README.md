@@ -10,6 +10,8 @@ Here's proof! The Mac image viewer on the left, and a SDL image viewer in Zig us
 
 ## Usage
 
+See [`zjpeg.zig`](./src/zjpeg.zig) for an example with SDL.
+
 ## Development
 
 Run using `zig`:
