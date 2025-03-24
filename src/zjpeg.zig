@@ -6,6 +6,7 @@ const sdl = @cImport({
 });
 
 const jpeg = @import("jpeg");
+const png = @import("png");
 
 const print = std.debug.print;
 
@@ -42,23 +43,17 @@ pub fn main() !void {
             try stdout.print(helpText, .{});
             std.process.exit(0);
         } else {
-            // assume input file
-            const jpeg_file = std.fs.cwd().openFile(arg, .{}) catch |err| {
-                std.log.err("Failed to open jpeg file {s}: {any}", .{ arg, err });
-                // EX_NOINPUT: cannot open input
-                std.process.exit(66);
-            };
-            defer jpeg_file.close();
+            const file_ext = std.fs.path.extension(arg);
+            const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
+                try jpeg.load(allocator, arg)
+            else if (std.mem.eql(u8, file_ext, ".png")) png: {
+                const img = png.load(allocator, arg) catch {
+                    std.process.exit(0);
+                };
+                break :png img;
+            } else return error.UnsupportedFileExtension;
 
-            var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
-            const reader = bufferedReader.reader().any();
-
-            const img = jpeg.decode(allocator, reader) catch |err| {
-                std.log.err("Failed to decode jpeg file: {any}", .{err});
-                return err;
-            };
             defer img.free(allocator);
-
             try draw(allocator, arg, img);
         }
     }

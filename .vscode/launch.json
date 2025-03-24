@@ -10,11 +10,11 @@
       "name": "Debug",
       "program": "${workspaceFolder}/zig-out/bin/zjpeg",
       "args": [
-        "${workspaceFolder}/iceberg.jpg"
+        "/opt/homebrew/Cellar/go/1.23.3/libexec/src/image/testdata/video-001.restart2.jpeg"
       ],
       "cwd": "${workspaceFolder}",
       "internalConsoleOptions": "openOnSessionStart",
-      "preLaunchTask": "build",
+      "preLaunchTask": "build"
     }
   ]
 }

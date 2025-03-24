@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     jpeg_module.addImport("image", image_module);
+    png_module.addImport("image", image_module);
     root_module.addImport("jpeg", jpeg_module);
     root_module.addImport("image", image_module);
     root_module.addImport("png", png_module);
