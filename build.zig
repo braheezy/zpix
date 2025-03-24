@@ -9,6 +9,11 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    const png_module = b.addModule("png", .{
+        .root_source_file = b.path("src/png/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const image_module = b.addModule("image", .{
         .root_source_file = b.path("src/image/main.zig"),
         .target = target,
@@ -24,6 +29,7 @@ pub fn build(b: *std.Build) !void {
     jpeg_module.addImport("image", image_module);
     root_module.addImport("jpeg", jpeg_module);
     root_module.addImport("image", image_module);
+    root_module.addImport("png", png_module);
 
     const exe = b.addExecutable(.{
         .name = "zjpeg",
