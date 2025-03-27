@@ -38,6 +38,61 @@ const DecoderFlags = packed struct {
     padding: u22 = 0,
 };
 
+const Interlace = enum {
+    none,
+    adam7,
+};
+
+const ColorType = enum(u8) {
+    grayscale = 0,
+    truecolor = 2,
+    paletted = 3,
+    grayscale_alpha = 4,
+    truecolor_alpha = 6,
+
+    pub fn fromInt(val: u8) !ColorType {
+        return switch (val) {
+            0 => .grayscale,
+            2 => .truecolor,
+            3 => .paletted,
+            4 => .grayscale_alpha,
+            6 => .truecolor_alpha,
+            else => error.InvalidColorType,
+        };
+    }
+};
+
+const ColorBitDepth = enum {
+    g1, // grayscale, 1 bit
+    g2, // grayscale, 2 bits
+    g4, // grayscale, 4 bits
+    g8, // grayscale, 8 bits
+    ga8, // grayscale+alpha, 8 bits
+    tc8, // truecolor, 8 bits
+    p1, // paletted, 1 bit
+    p2, // paletted, 2 bits
+    p4, // paletted, 4 bits
+    p8, // paletted, 8 bits
+    tca8, // truecolor+alpha, 8 bits
+    g16, // grayscale, 16 bits
+    ga16, // grayscale+alpha, 16 bits
+    tc16, // truecolor, 16 bits
+    tca16, // truecolor+alpha, 16 bits
+
+    pub fn bytesPerPixel(self: ColorBitDepth) u8 {
+        return switch (self) {
+            .g1, .g2, .g4, .g8, .p1, .p2, .p4, .p8 => 1,
+            .ga8 => 2,
+            .tc8 => 3,
+            .tca8 => 4,
+            .g16 => 2,
+            .ga16 => 4,
+            .tc16 => 6,
+            .tca16 => 8,
+        };
+    }
+};
+
 const Decoder = @This();
 
 // memory allocator
@@ -45,6 +100,11 @@ al: std.mem.Allocator,
 // reader into provided PNG data
 r: std.io.AnyReader,
 img: image.Image = undefined,
+width: u32 = 0,
+height: u32 = 0,
+depth: u8 = 0,
+color_type: ColorType = undefined,
+color_depth: ColorBitDepth = undefined,
 crc: std.hash.Crc32,
 stage: Stage = .start,
 palette: []image.Color = undefined,
@@ -59,9 +119,9 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
 
     try d.checkHeader();
 
-    try d.parseChunk();
-
-    try d.readMetadata();
+    while (d.stage != .seen_iend) {
+        try d.parseChunk();
+    }
 
     return d.img;
 }
@@ -81,8 +141,88 @@ fn parseChunk(self: *Decoder) !void {
 
     self.crc.update(&chunk_header.chunk_type.bytes());
     switch (chunk_header.chunk_type) {
-        .ihdr => {},
+        .ihdr => {
+            if (self.stage != .start) {
+                return error.ChunkOrderError;
+            }
+            self.stage = .seen_ihdr;
+            return try self.parseIhdr(chunk_header.length);
+        },
+        else => return error.NotImplementedYet,
     }
+}
+
+fn parseIhdr(self: *Decoder, length: u32) !void {
+    if (length != 13) {
+        return error.InvalidIHDRLength;
+    }
+
+    const bytes = try self.r.readBytesNoEof(13);
+    self.crc.update(&bytes);
+    if (bytes[10] != 0) {
+        return error.UnsupportedCompressionMethod;
+    }
+    if (bytes[11] != 0) {
+        return error.UnsupportedFilterMethod;
+    }
+    const interlace: Interlace = @enumFromInt(bytes[12]);
+    if (interlace != .none and interlace != .adam7) {
+        return error.UnsupportedInterlaceMethod;
+    }
+
+    const width = std.mem.readInt(u32, bytes[0..4], .big);
+    const height = std.mem.readInt(u32, bytes[4..8], .big);
+    if (width <= 0 or height <= 0) {
+        return error.InvalidDimension;
+    }
+    const num_pixels, const overflow = @mulWithOverflow(width, height);
+    if (overflow == 1) {
+        return error.DimensionOverflow;
+    }
+    // There can be up to 8 bytes per pixel, for 16 bits per channel RGBA.
+    if (num_pixels != (num_pixels * 8) / 8) {
+        return error.DimensionOverflow;
+    }
+
+    self.depth = bytes[8];
+    self.color_type = try ColorType.fromInt(bytes[9]);
+    self.width = width;
+    self.height = height;
+
+    self.color_depth = try switch (self.depth) {
+        1 => switch (self.color_type) {
+            .grayscale => .g1,
+            .paletted => .p1,
+            else => error.InvalidColorTypeDepthCombo,
+        },
+        2 => switch (self.color_type) {
+            .grayscale => .g2,
+            .paletted => .p2,
+            else => error.InvalidColorTypeDepthCombo,
+        },
+        4 => switch (self.color_type) {
+            .grayscale => .g4,
+            .paletted => .p4,
+            else => error.InvalidColorTypeDepthCombo,
+        },
+        8 => switch (self.color_type) {
+            .grayscale => .g8,
+            .truecolor => .tc8,
+            .paletted => .p8,
+            .grayscale_alpha => .ga8,
+            .truecolor_alpha => .tca8,
+        },
+        16 => switch (self.color_type) {
+            .grayscale => .g16,
+            .truecolor => .tc16,
+            .grayscale_alpha => .ga16,
+            .truecolor_alpha => .tca16,
+            else => error.InvalidColorTypeDepthCombo,
+        },
+        else => error.UnsupportedBitDepth,
+    };
+
+    return try self.verifyChecksum();
 }
 
 // Reads initial chunks and stops at the beginning of pixel data ('IDAT' and 'fdAT') or 'IEND'.
@@ -169,3 +309,17 @@ const ChunkType = enum(u32) {
         return b;
     }
 };
+
+fn verifyChecksum(self: *Decoder) !void {
+    // Read the 4-byte CRC from the file
+    var crc_bytes: [4]u8 = undefined;
+    _ = try self.r.readAll(&crc_bytes);
+
+    // Get the expected CRC value (big endian)
+    const expected_crc = std.mem.readInt(u32, &crc_bytes, .big);
+
+    // Compare with our calculated CRC
+    if (expected_crc != self.crc.final()) {
+        return error.InvalidChecksum;
+    }
+}
