@@ -8,6 +8,58 @@ const chunk_header_size = 8; // 4 bytes length + 4 bytes type
 const chunk_crc_size = 4;
 const chunk_base_size = chunk_header_size + chunk_crc_size;
 
+// Custom reader for IDAT chunks
+const IdatReader = struct {
+    decoder: *Decoder,
+    idat_length: u32 = 0,
+
+    const Reader = std.io.Reader(*IdatReader, anyerror, read);
+
+    fn reader(self: *IdatReader) Reader {
+        return .{ .context = self };
+    }
+
+    fn read(self: *IdatReader, buffer: []u8) !usize {
+        if (buffer.len == 0) return 0;
+
+        // Keep reading until we have IDAT data
+        while (self.idat_length == 0) {
+            // Verify checksum of previous chunk if any
+            try self.decoder.verifyChecksum();
+
+            // Read next chunk header
+            var tmp: [8]u8 = undefined;
+            try self.decoder.r.readNoEof(&tmp);
+
+            // Get chunk length and type
+            self.idat_length = std.mem.readInt(u32, tmp[0..4], .big);
+
+            // Verify it's an IDAT chunk
+            if (!std.mem.eql(u8, tmp[4..8], "IDAT")) {
+                return error.InvalidPngData;
+            }
+
+            // Reset CRC and update with chunk type
+            self.decoder.crc.update(tmp[4..8]);
+        }
+
+        // Check for length overflow
+        if (self.idat_length > std.math.maxInt(i32)) {
+            return error.Overflow;
+        }
+
+        // Read the actual data
+        const to_read = @min(buffer.len, self.idat_length);
+        const n = try self.decoder.r.read(buffer[0..to_read]);
+
+        // Update CRC and remaining length
+        self.decoder.crc.update(buffer[0..n]);
+        self.idat_length -= @intCast(n);
+
+        return n;
+    }
+};
+
 // Decoding stage.
 // The PNG specification says that the IHDR, PLTE (if present), tRNS (if
 // present), IDAT and IEND chunks must appear in that order. There may be
@@ -108,6 +160,7 @@ color_depth: ColorBitDepth = undefined,
 crc: std.hash.Crc32,
 stage: Stage = .start,
 palette: []image.Color = undefined,
+idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
 pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
@@ -144,6 +197,28 @@ fn parseChunk(self: *Decoder) !void {
             }
             self.stage = .seen_ihdr;
             return try self.parseIhdr(chunk_header.length);
+        },
+        .idat => {
+            const stage_int = @intFromEnum(self.stage);
+            const seen_ihdr = @intFromEnum(Stage.seen_ihdr);
+            const seen_idat = @intFromEnum(Stage.seen_idat);
+            if (stage_int < seen_ihdr or
+                stage_int > seen_idat or
+                (stage_int == seen_ihdr and
+                    colorDepthPaletted(self.color_depth)))
+            {
+                return error.ChunkOrderError;
+            } else if (self.stage == .seen_idat) {
+                // Ignore trailing zero-length or garbage IDAT chunks.
+                //
+                // This does not affect valid PNG images that contain multiple IDAT
+                // chunks, since the first call to parseIDAT below will consume all
+                // consecutive IDAT chunks required for decoding the image.
+            } else {
+                // Handle first IDAT chunk
+                self.stage = .seen_idat;
+                return try self.parseIdat(chunk_header.length);
+            }
         },
         else => {
             std.debug.print("not implemented: {s}\n", .{@tagName(chunk_header.chunk_type)});
@@ -226,35 +301,34 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     return try self.verifyChecksum();
 }
 
-// Reads initial chunks and stops at the beginning of pixel data ('IDAT' and 'fdAT') or 'IEND'.
-fn readMetadata(self: *Decoder) !void {
-    while (true) {
-        const header = try self.readChunkHeader();
+fn parseIdat(self: *Decoder, length: u32) !void {
+    self.idat_length = length;
+    _ = try self.decodeIdat();
+}
 
-        // Process chunk based on type...
-        switch (header.chunk_type) {
-            .plte => {
-                // The PLTE chunk is only read once.
-                // 1. There must not be more than one PLTE chunk.
-                // 2. It must precede the first IDAT chunk (also tRNS chunk).
-                // 3. Contains 1...256 RGB palette entries.
-                if (self.flags.read_plte or self.flags.read_trns) {
-                    return error.InvalidPng;
-                }
+// decode decodes the IDAT data into an image.
+fn decodeIdat(self: *Decoder) !image.Image {
+    // Create our IDAT reader
+    var idat_reader = IdatReader{ .decoder = self };
 
-                if (header.length == 0 or header.length > 768 or (header.length % 3) != 0) {
-                    return error.PngInvalidPLTE;
-                }
-                self.flags.read_plte = true;
+    // Create the zlib decompressor with our custom reader
+    var decompressed = std.compress.zlib.decompressor(idat_reader.reader());
+    const decompressed_reader = decompressed.reader();
+    return try self.readImagePass(decompressed_reader, 0, false);
+}
 
-                const num_palette_entries = header.length / 3;
-                std.debug.print("num_palette_entries: {d}\n", .{num_palette_entries});
-            },
-            .trns => return error.UnhandledtRNSChunk,
-            .ihdr, .idat, .iend => return,
-            else => unreachable,
-        }
-    }
+// readImagePass reads a single image pass, sized according to the pass number.
+fn readImagePass(
+    self: *Decoder,
+    reader: anytype,
+    pass: u8,
+    allocate_only: bool,
+) !image.Image {
+    _ = self;
+    _ = reader;
+    _ = pass;
+    _ = allocate_only;
+    return error.Unimplemented;
 }
 
 fn skipChunk(self: *Decoder, length: u32) !void {
@@ -317,4 +391,8 @@ fn verifyChecksum(self: *Decoder) !void {
     if (expected_crc != self.crc.final()) {
         return error.InvalidChecksum;
     }
+}
+
+fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
+    return @intFromEnum(ColorBitDepth.p1) <= @intFromEnum(color_depth) and @intFromEnum(color_depth) <= @intFromEnum(ColorBitDepth.p8);
 }
