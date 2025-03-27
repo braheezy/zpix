@@ -127,10 +127,8 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
 }
 
 fn checkHeader(self: *Decoder) !void {
-    const bytes_read = try self.r.readAtLeast(&self.scratch, png_header.len);
-    if (bytes_read < png_header.len) {
-        return error.UnexpectedEof;
-    }
+    try self.r.readNoEof(self.scratch[0..png_header.len]);
+
     if (!std.mem.eql(u8, self.scratch[0..png_header.len], png_header)) {
         return error.InvalidPngHeader;
     }
@@ -138,8 +136,7 @@ fn checkHeader(self: *Decoder) !void {
 
 fn parseChunk(self: *Decoder) !void {
     const chunk_header = try self.readChunkHeader();
-
-    self.crc.update(&chunk_header.chunk_type.bytes());
+    self.crc.update(&chunk_header.type_bytes);
     switch (chunk_header.chunk_type) {
         .ihdr => {
             if (self.stage != .start) {
@@ -148,7 +145,10 @@ fn parseChunk(self: *Decoder) !void {
             self.stage = .seen_ihdr;
             return try self.parseIhdr(chunk_header.length);
         },
-        else => return error.NotImplementedYet,
+        else => {
+            std.debug.print("not implemented: {s}\n", .{@tagName(chunk_header.chunk_type)});
+            return error.NotImplementedYet;
+        },
     }
 }
 
@@ -222,6 +222,7 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
         else => error.UnsupportedBitDepth,
     };
 
+    std.debug.print("ihdr: {d}x{d} {s} {s}\n", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
     return try self.verifyChecksum();
 }
 
@@ -264,17 +265,18 @@ fn skipChunk(self: *Decoder, length: u32) !void {
 const ChunkHeader = struct {
     length: u32,
     chunk_type: ChunkType,
+    type_bytes: [4]u8, // Store original bytes for CRC
 };
 
 fn readChunkHeader(self: *Decoder) !ChunkHeader {
     var header: ChunkHeader = undefined;
 
-    // Read chunk length (4 bytes, big endian)
-    header.length = try self.r.readStructEndian(u32, .big);
+    try self.r.readNoEof(self.scratch[0..8]);
 
-    // Read chunk type (4 bytes, big endian)
-    const tag = try self.r.readStructEndian(u32, .big);
-    header.chunk_type = ChunkType.fromTag(tag);
+    header.length = std.mem.readInt(u32, self.scratch[0..4], .big);
+
+    @memcpy(&header.type_bytes, self.scratch[4..8]);
+    header.chunk_type = ChunkType.fromBytes(&header.type_bytes);
 
     return header;
 }
@@ -287,20 +289,13 @@ const ChunkType = enum(u32) {
     trns,
     unknown,
 
-    // Convert 4 ASCII characters into a big-endian u32 tag
-    fn makeTag(comptime a: u8, b: u8, c: u8, d: u8) u32 {
-        return (@as(u32, a) << 24) | (@as(u32, b) << 16) | (@as(u32, c) << 8) | @as(u32, d);
-    }
-
-    pub fn fromTag(tag: u32) ChunkType {
-        return switch (tag) {
-            makeTag('I', 'H', 'D', 'R') => .ihdr,
-            makeTag('P', 'L', 'T', 'E') => .plte,
-            makeTag('I', 'D', 'A', 'T') => .idat,
-            makeTag('I', 'E', 'N', 'D') => .iend,
-            makeTag('t', 'R', 'N', 'S') => .trns,
-            else => .unknown,
-        };
+    pub fn fromBytes(data: *const [4]u8) ChunkType {
+        if (std.mem.eql(u8, data, "IHDR")) return .ihdr;
+        if (std.mem.eql(u8, data, "PLTE")) return .plte;
+        if (std.mem.eql(u8, data, "IDAT")) return .idat;
+        if (std.mem.eql(u8, data, "IEND")) return .iend;
+        if (std.mem.eql(u8, data, "tRNS")) return .trns;
+        return .unknown;
     }
 
     fn bytes(self: ChunkType) [4]u8 {
