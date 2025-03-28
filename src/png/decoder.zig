@@ -1,5 +1,6 @@
 const std = @import("std");
 const image = @import("image");
+const InverseFilterTable = @import("filter.zig").InverseFilterTable;
 
 const png_header = "\x89PNG\r\n\x1a\n";
 
@@ -161,6 +162,7 @@ crc: std.hash.Crc32,
 stage: Stage = .start,
 palette: []image.Color = undefined,
 idat_length: u32 = 0,
+filters_table: InverseFilterTable = undefined,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
 pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
@@ -168,6 +170,7 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         .al = al,
         .r = r,
         .crc = std.hash.Crc32.init(),
+        .filters_table = InverseFilterTable.init(),
     };
 
     try d.checkHeader();
@@ -314,6 +317,7 @@ fn decodeIdat(self: *Decoder) !image.Image {
     // Create the zlib decompressor with our custom reader
     var decompressed = std.compress.zlib.decompressor(idat_reader.reader());
     const decompressed_reader = decompressed.reader();
+
     return try self.readImagePass(decompressed_reader, 0, false);
 }
 
@@ -324,10 +328,51 @@ fn readImagePass(
     pass: u8,
     allocate_only: bool,
 ) !image.Image {
-    _ = self;
-    _ = reader;
     _ = pass;
     _ = allocate_only;
+    var bits_per_pixel: u8 = 0;
+    var img: image.Image = undefined;
+    switch (self.color_depth) {
+        .tc8 => {
+            bits_per_pixel = 24;
+            var rgba = try image.RGBAImage.init(self.al, .{
+                .min = .{ .x = 0, .y = 0 },
+                .max = .{ .x = @intCast(self.width), .y = @intCast(self.height) },
+            });
+            img = .{ .RGBA = &rgba };
+        },
+        else => return error.Unimplemented,
+    }
+    const bytes_per_pixel = (bits_per_pixel + 7) / 8;
+    const bits_per_row, const overflow = @mulWithOverflow(bits_per_pixel, self.width);
+    if (overflow == 1) {
+        return error.DimensionOverflow;
+    }
+    // The +1 is for the per-row filter type, which is at cr[0].
+    const row_size = 1 + (bits_per_row + 7) / 8;
+
+    var current_row = try self.al.alloc(u8, row_size);
+    // var previous_row: [row_size]u8 = undefined;
+
+    for (0..self.height) |y| {
+        _ = y;
+        // Read the filter type
+        const filter_type = try reader.readByte();
+        if (filter_type >= 5) {
+            return error.InvalidFilterType;
+        }
+
+        // Read the row data
+        _ = try reader.readAll(current_row[1..]);
+
+        // Apply the inverse filter using Blend2D's optimized routine
+        try self.filters_table.filters[filter_type](current_row[1..], bytes_per_pixel, row_size - 1, // subtract 1 for filter byte
+            1 // height is 1 since we're processing one row at a time
+        );
+
+        // TODO: Convert the filtered data into the image
+        // This will depend on your image.Image implementation
+    }
     return error.Unimplemented;
 }
 
