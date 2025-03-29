@@ -141,7 +141,7 @@ fn applySumFilter(a: u32, b: u32) u8 {
 }
 
 // Performs PNG average filter.
-fn applyAvgFilter(a: u8, b: u8) u8 {
+fn applyAvgFilter(a: u32, b: u32) u32 {
     return (a + b) / 2;
 }
 

@@ -7,7 +7,7 @@
         .SDL = .{
             .url = "git+https://github.com/allyourcodebase/SDL#0466e880e600b091940913b23d926d5ec5cfdec2",
             .hash = "122049871919faf5a46bb26f1664dc140f9fecdec0d7116ccbf536dc3379738e2096",
-            .lazy = true,
+            .lazy = false,
         },
     },
     // .fingerprint = 0xbe761b5defcb4c2b,

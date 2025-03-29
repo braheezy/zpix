@@ -75,12 +75,21 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
     const window_title = try std.fmt.allocPrintZ(al, "zjpeg view - {s}", .{file_name});
     defer al.free(window_title);
 
+    // Ensure scale_factor is not too small to avoid division issues
+    const safe_scale_factor = if (scale_factor < 0.001) 1.0 else scale_factor;
+
+    // Calculate window dimensions with bounds checking
+    const window_width = @min(1920, @as(i32, @intFromFloat(@as(f32, @floatFromInt(width)) / safe_scale_factor)));
+    const window_height = @min(1080, @as(i32, @intFromFloat(@as(f32, @floatFromInt(height)) / safe_scale_factor)));
+
+    std.debug.print("Creating window with dimensions: {d}x{d} (original: {d}x{d}, scale: {d})\n", .{ window_width, window_height, width, height, safe_scale_factor });
+
     const window = sdl.SDL_CreateWindow(
         window_title,
         sdl.SDL_WINDOWPOS_CENTERED,
         sdl.SDL_WINDOWPOS_CENTERED,
-        @as(i32, @intFromFloat(@as(f32, @floatFromInt(width)) / scale_factor)),
-        @as(i32, @intFromFloat(@as(f32, @floatFromInt(height)) / scale_factor)),
+        window_width,
+        window_height,
         sdl.SDL_WINDOW_SHOWN,
     );
     if (window == null) {
