@@ -177,6 +177,15 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         try d.parseChunk();
     }
 
+    std.debug.print("img size: {d}x{d}\n", .{ d.img.bounds().dX(), d.img.bounds().dY() });
+
+    // Check for valid image dimensions before returning
+    const bounds = d.img.bounds();
+    if (bounds.dX() == 0 or bounds.dY() == 0) {
+        std.debug.print("ERROR: Invalid final image dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
+        return error.InvalidImageDimensions;
+    }
+
     return d.img;
 }
 
@@ -282,9 +291,15 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
 
     const width = std.mem.readInt(u32, bytes[0..4], .big);
     const height = std.mem.readInt(u32, bytes[4..8], .big);
-    if (width <= 0 or height <= 0) {
+
+    // Debug current dimensions being parsed
+    std.debug.print("Parsed dimensions from IHDR: width={d}, height={d}\n", .{ width, height });
+
+    if (width == 0 or height == 0) {
+        std.debug.print("ERROR: Invalid dimensions: width={d}, height={d}\n", .{ width, height });
         return error.InvalidDimension;
     }
+
     const num_pixels, const overflow = @mulWithOverflow(width, height);
     if (overflow == 1) {
         return error.DimensionOverflow;
@@ -450,6 +465,13 @@ fn parseIdat(self: *Decoder, length: u32) !void {
 
         // Read the image data using the decompressed reader
         self.img = try self.readImagePass(decompress_stream.reader(), 0, false);
+
+        // Verify the image has valid dimensions
+        const bounds = self.img.bounds();
+        if (bounds.dX() == 0 or bounds.dY() == 0) {
+            std.debug.print("ERROR: Image has invalid dimensions after reading: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
+            return error.InvalidImageDimensions;
+        }
     } else {
         std.debug.print("Warning: No IDAT data found\n", .{});
         return error.EmptyIdatData;
@@ -504,7 +526,13 @@ fn readImagePass(
 ) !image.Image {
     _ = pass;
     _ = allocate_only;
-    std.debug.print("readImagePass: starting\n", .{});
+    std.debug.print("readImagePass: starting with dimensions: width={d}, height={d}\n", .{ self.width, self.height });
+
+    // Sanity check dimensions
+    if (self.width == 0 or self.height == 0) {
+        std.debug.print("ERROR: Invalid dimensions for image: width={d}, height={d}\n", .{ self.width, self.height });
+        return error.InvalidDimensions;
+    }
 
     var bits_per_pixel: u8 = 0;
     var img: image.Image = undefined;
@@ -512,12 +540,34 @@ fn readImagePass(
     switch (self.color_depth) {
         .tc8 => {
             bits_per_pixel = 24;
-            rgba_image = try image.RGBAImage.init(self.al, .{
+            // Create proper rectangle with correct dimensions
+            const rect = image.Rectangle{
                 .min = .{ .x = 0, .y = 0 },
                 .max = .{ .x = @intCast(self.width), .y = @intCast(self.height) },
-            });
-            img = .{ .RGBA = &rgba_image };
-            std.debug.print("Created RGBA image {d}x{d}\n", .{ self.width, self.height });
+            };
+
+            // Validate rectangle dimensions before creating the image
+            if (rect.dX() <= 0 or rect.dY() <= 0) {
+                std.debug.print("ERROR: Invalid rectangle dimensions: {d}x{d}\n", .{ rect.dX(), rect.dY() });
+                return error.InvalidDimensions;
+            }
+
+            rgba_image = try image.RGBAImage.init(self.al, rect);
+            // Create a pointer to the RGBAImage that will be owned by the Image union
+            const rgba_ptr = try self.al.create(image.RGBAImage);
+            rgba_ptr.* = rgba_image;
+            img = .{ .RGBA = rgba_ptr };
+
+            std.debug.print("Created RGBA image {d}x{d}, bounds: ({d},{d})-({d},{d})\n", .{ self.width, self.height, rect.min.x, rect.min.y, rect.max.x, rect.max.y });
+
+            // Verify the image has valid dimensions
+            const bounds = img.bounds();
+            std.debug.print("Image bounds: ({d},{d})-({d},{d}), dimensions: {d}x{d}\n", .{ bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y, bounds.dX(), bounds.dY() });
+
+            if (bounds.dX() <= 0 or bounds.dY() <= 0) {
+                std.debug.print("ERROR: Created image has invalid dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
+                return error.InvalidImageDimensions;
+            }
         },
         else => return error.Unimplemented,
     }
