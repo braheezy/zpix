@@ -525,7 +525,6 @@ fn readImagePass(
     allocate_only: bool,
 ) !image.Image {
     _ = pass;
-    _ = allocate_only;
     std.debug.print("readImagePass: starting with dimensions: width={d}, height={d}\n", .{ self.width, self.height });
 
     // Sanity check dimensions
@@ -534,120 +533,184 @@ fn readImagePass(
         return error.InvalidDimensions;
     }
 
-    var bits_per_pixel: u8 = 0;
+    // Create a properly sized image based on color type
     var img: image.Image = undefined;
-    var rgba_image: image.RGBAImage = undefined;
+    var rgba_image: *image.RGBAImage = undefined;
+    const rect = image.Rectangle{
+        .min = .{ .x = 0, .y = 0 },
+        .max = .{ .x = @intCast(self.width), .y = @intCast(self.height) },
+    };
+
+    if (allocate_only) {
+        // Just allocate the image and return it without reading any data
+        switch (self.color_depth) {
+            .tc8 => {
+                const rgba = try self.al.create(image.RGBAImage);
+                rgba.* = try image.RGBAImage.init(self.al, rect);
+                img = .{ .RGBA = rgba };
+            },
+            else => return error.Unimplemented,
+        }
+        return img;
+    }
+
+    // Create the image based on color type
     switch (self.color_depth) {
         .tc8 => {
-            bits_per_pixel = 24;
-            // Create proper rectangle with correct dimensions
-            const rect = image.Rectangle{
-                .min = .{ .x = 0, .y = 0 },
-                .max = .{ .x = @intCast(self.width), .y = @intCast(self.height) },
-            };
-
-            // Validate rectangle dimensions before creating the image
-            if (rect.dX() <= 0 or rect.dY() <= 0) {
-                std.debug.print("ERROR: Invalid rectangle dimensions: {d}x{d}\n", .{ rect.dX(), rect.dY() });
-                return error.InvalidDimensions;
-            }
-
-            rgba_image = try image.RGBAImage.init(self.al, rect);
-            // Create a pointer to the RGBAImage that will be owned by the Image union
-            const rgba_ptr = try self.al.create(image.RGBAImage);
-            rgba_ptr.* = rgba_image;
-            img = .{ .RGBA = rgba_ptr };
-
-            std.debug.print("Created RGBA image {d}x{d}, bounds: ({d},{d})-({d},{d})\n", .{ self.width, self.height, rect.min.x, rect.min.y, rect.max.x, rect.max.y });
-
-            // Verify the image has valid dimensions
-            const bounds = img.bounds();
-            std.debug.print("Image bounds: ({d},{d})-({d},{d}), dimensions: {d}x{d}\n", .{ bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y, bounds.dX(), bounds.dY() });
-
-            if (bounds.dX() <= 0 or bounds.dY() <= 0) {
-                std.debug.print("ERROR: Created image has invalid dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
-                return error.InvalidImageDimensions;
-            }
+            const rgba = try self.al.create(image.RGBAImage);
+            rgba.* = try image.RGBAImage.init(self.al, rect);
+            rgba_image = rgba;
+            img = .{ .RGBA = rgba };
+            std.debug.print("Created RGBA image {d}x{d}\n", .{ self.width, self.height });
         },
         else => return error.Unimplemented,
     }
+
+    // Calculate bytes per pixel based on bit depth and color type
+    const bits_per_pixel: u8 = switch (self.color_depth) {
+        .tc8 => 24,
+        else => return error.Unimplemented,
+    };
+
     const bytes_per_pixel = (bits_per_pixel + 7) / 8;
-    const bits_per_row, const overflow = @mulWithOverflow(bits_per_pixel, self.width);
-    if (overflow == 1) {
-        return error.DimensionOverflow;
-    }
-    // The +1 is for the per-row filter type, which is at cr[0].
-    const row_size = 1 + (bits_per_row + 7) / 8;
+
+    // The +1 is for the per-row filter type, which is at cr[0]
+    const row_size: usize = 1 + ((bits_per_pixel * self.width) + 7) / 8;
     std.debug.print("Row size: {d} bytes (including filter byte)\n", .{row_size});
 
-    // Prepare a buffer with filter byte at the start of each row
-    var all_rows = try self.al.alloc(u8, row_size * self.height);
-    defer self.al.free(all_rows);
-    std.debug.print("Allocated {d} bytes for all rows\n", .{row_size * self.height});
+    // Create current and previous row buffers (for filtering)
+    var cr = try self.al.alloc(u8, row_size);
+    defer self.al.free(cr);
+    var pr = try self.al.alloc(u8, row_size);
+    defer self.al.free(pr);
 
-    // For each row in the pass
-    var y: usize = 0;
-    while (y < self.height) : (y += 1) {
-        // Read the row data with filter byte
-        const row_start = y * row_size;
-        var bytes_read: usize = 0;
-        var remaining: usize = row_size;
+    // Read the image data row by row
+    var pixel_offset: usize = 0;
 
-        while (remaining > 0) {
-            const n = reader.read(all_rows[row_start + bytes_read .. row_start + row_size]) catch |err| {
-                std.debug.print("Error reading row {d} at offset {d}: {any}\n", .{ y + 1, bytes_read, err });
-                return err;
-            };
-
-            if (n == 0) {
-                std.debug.print("Premature end of data at row {d}, offset {d}, read {d}/{d} bytes\n", .{ y + 1, bytes_read, bytes_read, row_size });
-                return error.PrematureEndOfData;
-            }
-
-            bytes_read += n;
-            remaining -= n;
+    for (0..self.height) |y| {
+        // Read a row of data with filter byte
+        const bytes_read = try reader.readAll(cr);
+        if (bytes_read != row_size) {
+            std.debug.print("Error reading row {d}: expected {d} bytes, got {d}\n", .{ y, row_size, bytes_read });
+            return error.IncompleteRowData;
         }
 
-        std.debug.print("Read row {d}/{d}\r", .{ y + 1, self.height });
-    }
-    std.debug.print("\n", .{});
+        // Apply filter
+        const cdat = cr[1..]; // Skip the filter byte
+        const pdat = pr[1..]; // Previous row data
 
-    std.debug.print("All rows read, applying filter\n", .{});
-    // Process all rows at once with the Blend2D algorithm
-    try self.filters_table.filters[0](all_rows, bytes_per_pixel, row_size, self.height);
-    std.debug.print("Filter applied successfully\n", .{});
+        switch (cr[0]) { // Filter type
+            0 => {
+                // None filter - no action needed
+            },
+            1 => {
+                // Sub filter
+                var i: usize = bytes_per_pixel;
+                while (i < cdat.len) : (i += 1) {
+                    cdat[i] +%= cdat[i - bytes_per_pixel];
+                }
+            },
+            2 => {
+                // Up filter
+                for (pdat, 0..) |p, i| {
+                    cdat[i] +%= p;
+                }
+            },
+            3 => {
+                // Average filter
+                // First bytes_per_pixel bytes
+                for (0..bytes_per_pixel) |i| {
+                    cdat[i] +%= pdat[i] / 2;
+                }
+                // Remaining bytes
+                var i: usize = bytes_per_pixel;
+                while (i < cdat.len) : (i += 1) {
+                    cdat[i] +%= @as(u8, @intCast((@as(u16, cdat[i - bytes_per_pixel]) + @as(u16, pdat[i])) / 2));
+                }
+            },
+            4 => {
+                // Paeth filter
+                filterPaeth(cdat, pdat, bytes_per_pixel);
+            },
+            else => {
+                std.debug.print("ERROR: Unknown filter type: {d}\n", .{cr[0]});
+                return error.InvalidFilterType;
+            },
+        }
 
-    // Convert from bytes to colors
-    switch (self.color_depth) {
-        .tc8 => {
-            if (img == .RGBA) {
-                std.debug.print("Converting to RGBA\n", .{});
-                var pix = rgba_image.pixels;
-                var pix_offset: usize = 0;
-
-                for (0..self.height) |row| {
-                    // Skip the filter byte at the beginning of each row
-                    const cdat = all_rows[(row * row_size) + 1 .. (row + 1) * row_size];
+        // Convert bytes to colors based on color type
+        switch (self.color_depth) {
+            .tc8 => {
+                if (img == .RGBA) {
+                    // RGB to RGBA conversion
+                    const pix = rgba_image.pixels;
+                    var i: usize = pixel_offset;
                     var j: usize = 0;
 
-                    for (0..self.width) |_| {
-                        // Copy RGB components and set alpha to 0xFF
-                        pix[pix_offset + 0] = cdat[j + 0]; // R
-                        pix[pix_offset + 1] = cdat[j + 1]; // G
-                        pix[pix_offset + 2] = cdat[j + 2]; // B
-                        pix[pix_offset + 3] = 0xFF; // A (fully opaque)
+                    while (j < cdat.len) : ({
+                        j += 3;
+                        i += 4;
+                    }) {
+                        const out_of_bounds = (i + 3 >= pix.len) or (j + 2 >= cdat.len);
+                        if (out_of_bounds) break;
 
-                        pix_offset += 4; // RGBA is 4 bytes
-                        j += 3; // RGB is 3 bytes
+                        pix[i + 0] = cdat[j + 0]; // R
+                        pix[i + 1] = cdat[j + 1]; // G
+                        pix[i + 2] = cdat[j + 2]; // B
+                        pix[i + 3] = 0xFF; // A (fully opaque)
                     }
+
+                    pixel_offset += rgba_image.stride;
                 }
-            }
-        },
-        else => return error.Unimplemented,
+            },
+            else => return error.Unimplemented,
+        }
+
+        // Swap current and previous row for next iteration
+        const temp = pr;
+        pr = cr;
+        cr = temp;
+
+        if ((y + 1) % 100 == 0 or y + 1 == self.height) {
+            std.debug.print("Read row {d}/{d}\n", .{ y + 1, self.height });
+        }
     }
 
     std.debug.print("Image decoding complete\n", .{});
     return img;
+}
+
+// Implementation of the Paeth filter as described in the PNG specification
+fn filterPaeth(cdat: []u8, pdat: []u8, bytes_per_pixel: usize) void {
+    // First handle the bytes_per_pixel bytes, which only have "up" as predictor
+    for (0..bytes_per_pixel) |i| {
+        cdat[i] +%= pdat[i];
+    }
+
+    // For the remaining pixels, use the Paeth predictor
+    var i: usize = bytes_per_pixel;
+    while (i < cdat.len) : (i += 1) {
+        const a: i16 = @intCast(cdat[i - bytes_per_pixel]); // Left
+        const b: i16 = @intCast(pdat[i]); // Above
+        const c: i16 = @intCast(pdat[i - bytes_per_pixel]); // Upper left
+
+        // Paeth predictor formula from the PNG spec, with safe integer math
+        const p: i16 = a + b - c;
+        const pa: i16 = if (p > a) p - a else a - p;
+        const pb: i16 = if (p > b) p - b else b - p;
+        const pc: i16 = if (p > c) p - c else c - p;
+
+        var predictor: u8 = undefined;
+        if (pa <= pb and pa <= pc) {
+            predictor = @intCast(a);
+        } else if (pb <= pc) {
+            predictor = @intCast(b);
+        } else {
+            predictor = @intCast(c);
+        }
+
+        cdat[i] +%= predictor;
+    }
 }
 
 fn skipChunk(self: *Decoder, length: u32) !void {
