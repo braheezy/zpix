@@ -196,6 +196,7 @@ fn parseChunk(self: *Decoder) !void {
                 self.stage = .seen_idat;
             }
 
+            std.debug.print("idat: length - {d}\n", .{chunk_header.length});
             // Process all consecutive IDAT chunks
             return try self.parseIdat(chunk_header.length);
         },
@@ -209,8 +210,12 @@ fn parseChunk(self: *Decoder) !void {
             return try self.verifyChecksum();
         },
         else => {
-            std.debug.print("not implemented: {s}\n", .{@tagName(chunk_header.chunk_type)});
-            // For now, just skip unknown chunks instead of failing
+            if (chunk_header.chunk_type == .unknown) {
+                std.debug.print("skipping unknown chunk: '{s}' (length: {d})\n", .{ chunk_header.type_bytes, chunk_header.length });
+            } else {
+                std.debug.print("skipping chunk: {s} (length: {d})\n", .{ @tagName(chunk_header.chunk_type), chunk_header.length });
+            }
+            // Skip chunk data
             try self.skipChunk(chunk_header.length);
             return try self.verifyChecksum();
         },
@@ -700,6 +705,17 @@ const ChunkType = enum(u32) {
     idat,
     iend,
     trns,
+    chrm, // Chromaticity coordinates
+    gama, // Image gamma
+    iccp, // ICC profile
+    sbit, // Significant bits
+    srgb, // Standard RGB color space
+    bkgd, // Background color
+    phys, // Physical dimensions
+    text, // Textual data
+    ztxt, // Compressed textual data
+    itxt, // International textual data
+    time, // Last modification time
     unknown,
 
     pub fn fromBytes(data: *const [4]u8) ChunkType {
@@ -708,6 +724,17 @@ const ChunkType = enum(u32) {
         if (std.mem.eql(u8, data, "IDAT")) return .idat;
         if (std.mem.eql(u8, data, "IEND")) return .iend;
         if (std.mem.eql(u8, data, "tRNS")) return .trns;
+        if (std.mem.eql(u8, data, "cHRM")) return .chrm;
+        if (std.mem.eql(u8, data, "gAMA")) return .gama;
+        if (std.mem.eql(u8, data, "iCCP")) return .iccp;
+        if (std.mem.eql(u8, data, "sBIT")) return .sbit;
+        if (std.mem.eql(u8, data, "sRGB")) return .srgb;
+        if (std.mem.eql(u8, data, "bKGD")) return .bkgd;
+        if (std.mem.eql(u8, data, "pHYs")) return .phys;
+        if (std.mem.eql(u8, data, "tEXt")) return .text;
+        if (std.mem.eql(u8, data, "zTXt")) return .ztxt;
+        if (std.mem.eql(u8, data, "iTXt")) return .itxt;
+        if (std.mem.eql(u8, data, "tIME")) return .time;
         return .unknown;
     }
 
