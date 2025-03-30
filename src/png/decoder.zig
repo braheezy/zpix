@@ -44,6 +44,25 @@ const Interlace = enum {
     adam7,
 };
 
+// Adam7 interlacing pass information
+const InterlacePass = struct {
+    x_offset: u32,
+    y_offset: u32,
+    x_factor: u32,
+    y_factor: u32,
+};
+
+// Adam7 interlacing pattern data
+const interlacing = [7]InterlacePass{
+    .{ .x_offset = 0, .y_offset = 0, .x_factor = 8, .y_factor = 8 }, // Pass 1
+    .{ .x_offset = 4, .y_offset = 0, .x_factor = 8, .y_factor = 8 }, // Pass 2
+    .{ .x_offset = 0, .y_offset = 4, .x_factor = 4, .y_factor = 8 }, // Pass 3
+    .{ .x_offset = 2, .y_offset = 0, .x_factor = 4, .y_factor = 4 }, // Pass 4
+    .{ .x_offset = 0, .y_offset = 2, .x_factor = 2, .y_factor = 4 }, // Pass 5
+    .{ .x_offset = 1, .y_offset = 0, .x_factor = 2, .y_factor = 2 }, // Pass 6
+    .{ .x_offset = 0, .y_offset = 1, .x_factor = 1, .y_factor = 2 }, // Pass 7
+};
+
 const ColorType = enum(u8) {
     grayscale = 0,
     truecolor = 2,
@@ -97,7 +116,7 @@ const ColorBitDepth = enum {
 pub const Decoder = @This();
 
 // memory allocator
-al: std.mem.Allocator,
+allocator: std.mem.Allocator,
 // reader into provided PNG data
 r: std.io.AnyReader,
 img: image.Image = undefined,
@@ -106,15 +125,16 @@ height: u32 = 0,
 depth: u8 = 0,
 color_type: ColorType = undefined,
 color_depth: ColorBitDepth = undefined,
+interlace: Interlace = .none,
 crc: std.hash.Crc32,
 stage: Stage = .start,
 palette: []image.Color = undefined,
 idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
-pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     var d = Decoder{
-        .al = al,
+        .allocator = allocator,
         .r = r,
         .crc = std.hash.Crc32.init(),
     };
@@ -177,7 +197,7 @@ fn parseChunk(self: *Decoder) !void {
             }
 
             // Process all consecutive IDAT chunks
-            return try self.processIdatChunks(chunk_header.length);
+            return try self.parseIdat(chunk_header.length);
         },
         .iend => {
             // IEND must be the last chunk
@@ -210,8 +230,8 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     if (bytes[11] != 0) {
         return error.UnsupportedFilterMethod;
     }
-    const interlace: Interlace = @enumFromInt(bytes[12]);
-    if (interlace != .none and interlace != .adam7) {
+    self.interlace = @enumFromInt(bytes[12]);
+    if (self.interlace != .none and self.interlace != .adam7) {
         return error.UnsupportedInterlaceMethod;
     }
 
@@ -273,10 +293,10 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     return try self.verifyChecksum();
 }
 
-// Process all consecutive IDAT chunks
-fn processIdatChunks(self: *Decoder, first_chunk_length: u32) !void {
+// Process all consecutive IDAT chunks and decode the image
+fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
     // Collect all IDAT chunks
-    var all_data = std.ArrayList(u8).init(self.al);
+    var all_data = std.ArrayList(u8).init(self.allocator);
     defer all_data.deinit();
 
     // Read the first IDAT chunk data and add it to our buffer
@@ -388,8 +408,30 @@ fn processIdatChunks(self: *Decoder, first_chunk_length: u32) !void {
         // Create a decompressor for the zlib stream
         var decompress_stream = std.compress.zlib.decompressor(data_stream.reader());
 
-        // Read the image data using the decompressed reader
-        self.img = try self.readImagePass(decompress_stream.reader(), 0, false);
+        // Decode the image based on interlace type, similar to Go's implementation
+        if (self.interlace == .none) {
+            // Non-interlaced image: just read the image in a single pass
+            self.img = try self.readImagePass(decompress_stream.reader(), 0, false);
+        } else if (self.interlace == .adam7) {
+            // Interlaced image: allocate the full image first
+            self.img = try self.readImagePass(decompress_stream.reader(), 0, true);
+
+            // Then read each of the 7 passes
+            for (0..7) |p| {
+                const pass: u8 = @intCast(p);
+                const pass_img = self.readImagePass(decompress_stream.reader(), pass, false) catch |err| {
+                    if (err == error.EmptyPass) {
+                        // Skip empty passes
+                        continue;
+                    }
+                    return err;
+                };
+
+                // TODO: We should merge the pass image into the main image
+                // try self.mergePassInto(self.img, pass_img, pass);
+                _ = pass_img; // Will use this when implementing mergePassInto
+            }
+        }
     } else {
         return error.EmptyIdatData;
     }
@@ -402,66 +444,103 @@ fn readImagePass(
     pass: u8,
     allocate_only: bool,
 ) !image.Image {
-    _ = pass;
+    var width = self.width;
+    var height = self.height;
+
+    // For interlaced images, calculate the dimensions for this pass
+    if (self.interlace == .adam7 and !allocate_only) {
+        const p = interlacing[pass];
+
+        // Calculate pass dimensions using the same formula as Go:
+        // width = (width - p.x_offset + p.x_factor - 1) / p.x_factor
+        // This handles rounding up when dividing
+        width = (width -| p.x_offset +| p.x_factor -| 1) / p.x_factor;
+        height = (height -| p.y_offset +| p.y_factor -| 1) / p.y_factor;
+
+        // A PNG image can't have zero width or height, but for an interlaced
+        // image, an individual pass might have zero width or height.
+        if (width == 0 or height == 0) {
+            return error.EmptyPass; // Skip empty passes
+        }
+    }
 
     // Sanity check dimensions
-    if (self.width == 0 or self.height == 0) {
+    if (width == 0 or height == 0) {
         return error.InvalidDimensions;
     }
 
-    // Create a properly sized image based on color type
-    var img: image.Image = undefined;
-    var rgba_image: *image.RGBAImage = undefined;
+    // Create the rectangle with proper dimensions for this pass
     const rect = image.Rectangle{
         .min = .{ .x = 0, .y = 0 },
-        .max = .{ .x = @intCast(self.width), .y = @intCast(self.height) },
+        .max = .{ .x = @intCast(width), .y = @intCast(height) },
     };
 
+    // Prepare variables for different image types, similar to Go's implementation
+    var img: image.Image = undefined;
+    // Only keep the variable we're currently using
+    var rgba: ?*image.RGBAImage = null;
+
+    // Allocate the image based on color type
     if (allocate_only) {
         // Just allocate the image and return it without reading any data
         switch (self.color_depth) {
             .tc8 => {
-                const rgba = try self.al.create(image.RGBAImage);
-                rgba.* = try image.RGBAImage.init(self.al, rect);
-                img = .{ .RGBA = rgba };
+                rgba = try self.allocator.create(image.RGBAImage);
+                rgba.?.* = try image.RGBAImage.init(self.allocator, rect);
+                img = .{ .RGBA = rgba.? };
             },
+            // Add cases for other color types as you implement them
             else => return error.Unimplemented,
         }
         return img;
     }
 
-    // Create the image based on color type
+    // Calculate bits per pixel based on color depth
+    const bits_per_pixel: u8 = switch (self.color_depth) {
+        .g1, .p1 => 1,
+        .g2, .p2 => 2,
+        .g4, .p4 => 4,
+        .g8, .p8 => 8,
+        .ga8 => 16,
+        .tc8 => 24,
+        .tca8 => 32,
+        .g16 => 16,
+        .ga16 => 32,
+        .tc16 => 48,
+        .tca16 => 64,
+    };
+
+    // Create the image based on color type, setting the appropriate pointer
     switch (self.color_depth) {
         .tc8 => {
-            const rgba = try self.al.create(image.RGBAImage);
-            rgba.* = try image.RGBAImage.init(self.al, rect);
-            rgba_image = rgba;
-            img = .{ .RGBA = rgba };
+            rgba = try self.allocator.create(image.RGBAImage);
+            rgba.?.* = try image.RGBAImage.init(self.allocator, rect);
+            img = .{ .RGBA = rgba.? };
         },
+        // Add cases for other color types as you implement them
         else => return error.Unimplemented,
     }
 
-    // Calculate bytes per pixel based on bit depth and color type
-    const bits_per_pixel: u8 = switch (self.color_depth) {
-        .tc8 => 24,
-        else => return error.Unimplemented,
-    };
+    // If this is allocate_only, the reader will not be used
+    if (allocate_only) {
+        return img; // Just return the allocated image
+    }
 
     const bytes_per_pixel = (bits_per_pixel + 7) / 8;
 
     // The +1 is for the per-row filter type, which is at cr[0]
-    const row_size: usize = 1 + ((bits_per_pixel * self.width) + 7) / 8;
+    const row_size: usize = 1 + ((bits_per_pixel * width) + 7) / 8;
 
     // Create current and previous row buffers (for filtering)
-    var cr = try self.al.alloc(u8, row_size);
-    defer self.al.free(cr);
-    var pr = try self.al.alloc(u8, row_size);
-    defer self.al.free(pr);
+    var cr = try self.allocator.alloc(u8, row_size);
+    defer self.allocator.free(cr);
+    var pr = try self.allocator.alloc(u8, row_size);
+    defer self.allocator.free(pr);
 
     // Read the image data row by row
     var pixel_offset: usize = 0;
 
-    for (0..self.height) |_| {
+    for (0..height) |_| {
         // Read a row of data with filter byte
         const bytes_read = try reader.readAll(cr);
         if (bytes_read != row_size) {
@@ -513,9 +592,9 @@ fn readImagePass(
         // Convert bytes to colors based on color type
         switch (self.color_depth) {
             .tc8 => {
-                if (img == .RGBA) {
+                if (img == .RGBA and rgba != null) {
                     // RGB to RGBA conversion
-                    const pix = rgba_image.pixels;
+                    const pix = rgba.?.pixels;
                     var i: usize = pixel_offset;
                     var j: usize = 0;
 
@@ -532,9 +611,10 @@ fn readImagePass(
                         pix[i + 3] = 0xFF; // A (fully opaque)
                     }
 
-                    pixel_offset += rgba_image.stride;
+                    pixel_offset += rgba.?.stride;
                 }
             },
+            // Add cases for other color types as you implement them
             else => return error.Unimplemented,
         }
 
@@ -660,4 +740,46 @@ pub fn verifyChecksum(self: *Decoder) !void {
 
 fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
     return @intFromEnum(ColorBitDepth.p1) <= @intFromEnum(color_depth) and @intFromEnum(color_depth) <= @intFromEnum(ColorBitDepth.p8);
+}
+
+// Implementation of mergePassInto to combine interlaced passes
+fn mergePassInto(self: *Decoder, dst_img: image.Image, src_img: image.Image, pass: u8) !void {
+    // Implement the logic to merge an interlaced pass into the main image
+    // This is needed for Adam7 interlacing
+    const p = interlacing[pass];
+
+    switch (self.color_depth) {
+        .tc8 => {
+            if (dst_img == .RGBA and src_img == .RGBA) {
+                const dst = dst_img.RGBA;
+                const src = src_img.RGBA;
+                const src_rect = src.bounds();
+                const src_width = src_rect.dX();
+
+                var y: usize = 0;
+                var dy = p.y_offset;
+
+                while (y < src_rect.dY()) : (y += 1) {
+                    var x: usize = 0;
+                    var dx = p.x_offset;
+
+                    while (x < src_width) : (x += 1) {
+                        const src_offset = y * src.stride + x * 4;
+                        const dst_offset = dy * dst.stride + dx * 4;
+
+                        dst.pixels[dst_offset + 0] = src.pixels[src_offset + 0]; // R
+                        dst.pixels[dst_offset + 1] = src.pixels[src_offset + 1]; // G
+                        dst.pixels[dst_offset + 2] = src.pixels[src_offset + 2]; // B
+                        dst.pixels[dst_offset + 3] = src.pixels[src_offset + 3]; // A
+
+                        dx += p.x_factor;
+                    }
+
+                    dy += p.y_factor;
+                }
+            }
+        },
+        // Add cases for other color types as you implement them
+        else => return error.Unimplemented,
+    }
 }
