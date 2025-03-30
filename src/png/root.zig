@@ -22,3 +22,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
 
     return img;
 }
+
+comptime {
+    _ = @import("decoder_test.zig");
+}

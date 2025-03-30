@@ -483,22 +483,8 @@ fn readImagePass(
     // Prepare variables for different image types, similar to Go's implementation
     var img: image.Image = undefined;
     // Only keep the variable we're currently using
-    var rgba: ?*image.RGBAImage = null;
-
-    // Allocate the image based on color type
-    if (allocate_only) {
-        // Just allocate the image and return it without reading any data
-        switch (self.color_depth) {
-            .tc8 => {
-                rgba = try self.allocator.create(image.RGBAImage);
-                rgba.?.* = try image.RGBAImage.init(self.allocator, rect);
-                img = .{ .RGBA = rgba.? };
-            },
-            // Add cases for other color types as you implement them
-            else => return error.Unimplemented,
-        }
-        return img;
-    }
+    var rgba: *image.RGBAImage = undefined;
+    var gray: *image.GrayImage = undefined;
 
     // Calculate bits per pixel based on color depth
     const bits_per_pixel: u8 = switch (self.color_depth) {
@@ -517,10 +503,15 @@ fn readImagePass(
 
     // Create the image based on color type, setting the appropriate pointer
     switch (self.color_depth) {
+        .g1, .g2, .g4, .g8 => {
+            gray = try self.allocator.create(image.GrayImage);
+            gray.* = try image.GrayImage.init(self.allocator, rect);
+            img = .{ .Gray = gray };
+        },
         .tc8 => {
             rgba = try self.allocator.create(image.RGBAImage);
-            rgba.?.* = try image.RGBAImage.init(self.allocator, rect);
-            img = .{ .RGBA = rgba.? };
+            rgba.* = try image.RGBAImage.init(self.allocator, rect);
+            img = .{ .RGBA = rgba };
         },
         // Add cases for other color types as you implement them
         else => return error.Unimplemented,
@@ -597,27 +588,26 @@ fn readImagePass(
         // Convert bytes to colors based on color type
         switch (self.color_depth) {
             .tc8 => {
-                if (img == .RGBA and rgba != null) {
-                    // RGB to RGBA conversion
-                    const pix = rgba.?.pixels;
-                    var i: usize = pixel_offset;
-                    var j: usize = 0;
+                const rgba_img = img.RGBA;
+                // RGB to RGBA conversion
+                const pix = rgba_img.pixels;
+                var i: usize = pixel_offset;
+                var j: usize = 0;
 
-                    while (j < cdat.len) : ({
-                        j += 3;
-                        i += 4;
-                    }) {
-                        const out_of_bounds = (i + 3 >= pix.len) or (j + 2 >= cdat.len);
-                        if (out_of_bounds) break;
+                while (j < cdat.len) : ({
+                    j += 3;
+                    i += 4;
+                }) {
+                    const out_of_bounds = (i + 3 >= pix.len) or (j + 2 >= cdat.len);
+                    if (out_of_bounds) break;
 
-                        pix[i + 0] = cdat[j + 0]; // R
-                        pix[i + 1] = cdat[j + 1]; // G
-                        pix[i + 2] = cdat[j + 2]; // B
-                        pix[i + 3] = 0xFF; // A (fully opaque)
-                    }
-
-                    pixel_offset += rgba.?.stride;
+                    pix[i + 0] = cdat[j + 0]; // R
+                    pix[i + 1] = cdat[j + 1]; // G
+                    pix[i + 2] = cdat[j + 2]; // B
+                    pix[i + 3] = 0xFF; // A (fully opaque)
                 }
+
+                pixel_offset += rgba_img.stride;
             },
             // Add cases for other color types as you implement them
             else => return error.Unimplemented,

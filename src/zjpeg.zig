@@ -5,7 +5,7 @@ const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-const jpeg = @import("jpeg");
+pub const jpeg = @import("jpeg");
 const png = @import("png");
 
 const print = std.debug.print;
@@ -159,8 +159,4 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
         sdl.SDL_RenderPresent(renderer);
     }
-}
-
-test {
-    @import("std").testing.refAllDecls(@This());
 }
