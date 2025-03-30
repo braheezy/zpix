@@ -85,8 +85,6 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
     const window_width = @min(1920, @as(i32, @intFromFloat(@as(f32, @floatFromInt(width)) / safe_scale_factor)));
     const window_height = @min(1080, @as(i32, @intFromFloat(@as(f32, @floatFromInt(height)) / safe_scale_factor)));
 
-    std.debug.print("Creating window with dimensions: {d}x{d} (original: {d}x{d}, scale: {d})\n", .{ window_width, window_height, width, height, safe_scale_factor });
-
     const window = sdl.SDL_CreateWindow(
         window_title,
         sdl.SDL_WINDOWPOS_CENTERED,

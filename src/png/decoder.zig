@@ -1,6 +1,5 @@
 const std = @import("std");
 const image = @import("image");
-const IdatReader = @import("idat.zig").IdatReader;
 const mem = std.mem;
 
 const png_header = "\x89PNG\r\n\x1a\n";
@@ -112,7 +111,6 @@ stage: Stage = .start,
 palette: []image.Color = undefined,
 idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
-next_chunk: ?ChunkHeader = null,
 
 pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     var d = Decoder{
@@ -146,13 +144,8 @@ fn checkHeader(self: *Decoder) !void {
 }
 
 fn parseChunk(self: *Decoder) !void {
-    // Read the chunk header directly, or use stored next_chunk if available
-    const chunk_header = if (self.next_chunk) |header| blk: {
-        std.debug.print("Using stored next_chunk: {s} (type={d})\n", .{ header.type_bytes, @intFromEnum(header.chunk_type) });
-        const temp = header;
-        self.next_chunk = null; // Clear it after use
-        break :blk temp;
-    } else try self.readChunkHeader();
+    // Read the chunk header
+    const chunk_header = try self.readChunkHeader();
 
     // Reset CRC for each chunk and update with chunk type
     self.crc = std.hash.Crc32.init();
@@ -176,20 +169,17 @@ fn parseChunk(self: *Decoder) !void {
                     colorDepthPaletted(self.color_depth)))
             {
                 return error.ChunkOrderError;
-            } else if (self.stage == .seen_idat) {
-                // Not the first IDAT chunk, just skip it for now
-                // The parseIdat will handle reading all IDAT chunks
-                try self.skipChunk(chunk_header.length);
-                return try self.verifyChecksum();
-            } else {
-                // First IDAT chunk
-                self.stage = .seen_idat;
-                self.idat_length = chunk_header.length;
-                return try self.parseIdat(chunk_header.length);
             }
+
+            if (self.stage != .seen_idat) {
+                // First IDAT chunk encountered
+                self.stage = .seen_idat;
+            }
+
+            // Process all consecutive IDAT chunks
+            return try self.processIdatChunks(chunk_header.length);
         },
         .iend => {
-            std.debug.print("iend\n", .{});
             // IEND must be the last chunk
             if (self.stage != .seen_idat) {
                 return error.ChunkOrderError;
@@ -228,11 +218,7 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     const width = std.mem.readInt(u32, bytes[0..4], .big);
     const height = std.mem.readInt(u32, bytes[4..8], .big);
 
-    // Debug current dimensions being parsed
-    std.debug.print("Parsed dimensions from IHDR: width={d}, height={d}\n", .{ width, height });
-
     if (width == 0 or height == 0) {
-        std.debug.print("ERROR: Invalid dimensions: width={d}, height={d}\n", .{ width, height });
         return error.InvalidDimension;
     }
 
@@ -287,17 +273,16 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     return try self.verifyChecksum();
 }
 
-fn parseIdat(self: *Decoder, length: u32) !void {
-    std.debug.print("parseIdat: length={d}\n", .{length});
-
+// Process all consecutive IDAT chunks
+fn processIdatChunks(self: *Decoder, first_chunk_length: u32) !void {
     // Collect all IDAT chunks
     var all_data = std.ArrayList(u8).init(self.al);
     defer all_data.deinit();
 
     // Read the first IDAT chunk data and add it to our buffer
-    if (length > 0) {
+    if (first_chunk_length > 0) {
         // Read the chunk data in chunks to handle large IDAT chunks
-        var remaining = length;
+        var remaining = first_chunk_length;
         while (remaining > 0) {
             const bytes_to_read = @min(remaining, self.scratch.len);
             try self.r.readNoEof(self.scratch[0..bytes_to_read]);
@@ -311,14 +296,12 @@ fn parseIdat(self: *Decoder, length: u32) !void {
 
         // First chunk read, verify CRC
         try self.verifyChecksum();
-        std.debug.print("First IDAT chunk ({d} bytes) read and CRC verified\n", .{length});
     } else {
         // Empty chunk, just verify CRC
         try self.verifyChecksum();
-        std.debug.print("Empty first IDAT chunk, CRC verified\n", .{});
     }
 
-    // Continue reading additional IDAT chunks until we hit something else
+    // Continue reading chunks until we hit a non-IDAT chunk
     while (true) {
         // Try to read the next chunk header
         var header_buf: [8]u8 = undefined;
@@ -329,24 +312,49 @@ fn parseIdat(self: *Decoder, length: u32) !void {
 
         // Check if it's an IDAT chunk
         if (!std.mem.eql(u8, header_buf[4..8], "IDAT")) {
-            // Not IDAT, prepare for the next chunk reading
-            // Store this chunk header for next parseChunk call
-            var next_chunk = ChunkHeader{
+            // Not IDAT, log the chunk type we found but don't try to process it now
+
+            // We need to stop reading IDAT chunks and let parseChunk handle
+            // the next chunk. Since we can't put back what we've read,
+            // we reset the stage to allow parseChunk to be called again
+            self.stage = .seen_ihdr; // Temporarily revert to allow another chunk to be processed
+
+            // Now call parseChunk with this header
+            var next_header = ChunkHeader{
                 .length = std.mem.readInt(u32, header_buf[0..4], .big),
                 .type_bytes = undefined,
                 .chunk_type = undefined,
             };
-            @memcpy(&next_chunk.type_bytes, header_buf[4..8]);
-            next_chunk.chunk_type = ChunkType.fromBytes(&next_chunk.type_bytes);
-            self.next_chunk = next_chunk;
+            @memcpy(&next_header.type_bytes, header_buf[4..8]);
+            next_header.chunk_type = ChunkType.fromBytes(&next_header.type_bytes);
 
-            std.debug.print("Found non-IDAT chunk: {s}, length={d}\n", .{ next_chunk.type_bytes, next_chunk.length });
+            // Reset the stage to seen_idat and process the chunk
+            self.stage = .seen_idat;
+
+            // Process the chunk based on its type
+            self.crc = std.hash.Crc32.init();
+            self.crc.update(&next_header.type_bytes);
+
+            switch (next_header.chunk_type) {
+                .iend => {
+                    // IEND must be the last chunk
+                    self.stage = .seen_iend;
+                    // IEND has no data, just verify the checksum
+                    try self.verifyChecksum();
+                },
+                else => {
+                    std.debug.print("Found non-IDAT/IEND chunk: {s}\n", .{next_header.type_bytes});
+                    // Skip this chunk for now and let the next parseChunk call handle it
+                    try self.skipChunk(next_header.length);
+                    try self.verifyChecksum();
+                },
+            }
+
             break;
         }
 
         // It's another IDAT chunk, read it
         const chunk_length = std.mem.readInt(u32, header_buf[0..4], .big);
-        std.debug.print("Found additional IDAT chunk, length={d}\n", .{chunk_length});
 
         // Initialize CRC for this chunk
         self.crc = std.hash.Crc32.init();
@@ -372,24 +380,8 @@ fn parseIdat(self: *Decoder, length: u32) !void {
         try self.verifyChecksum();
     }
 
-    std.debug.print("Collected {d} bytes of IDAT data\n", .{all_data.items.len});
-
     // Now we can decompress and process the data
     if (all_data.items.len > 0) {
-        // Print the first few bytes to check for zlib header
-        if (all_data.items.len >= 2) {
-            std.debug.print("First bytes of compressed data: ", .{});
-            for (all_data.items[0..@min(16, all_data.items.len)]) |b| {
-                std.debug.print("{x:0>2} ", .{b});
-            }
-            std.debug.print("\n", .{});
-
-            // Check for zlib header (0x78 is most common first byte)
-            if (all_data.items[0] == 0x78) {
-                std.debug.print("Valid zlib header detected (0x{x:0>2} 0x{x:0>2})\n", .{ all_data.items[0], all_data.items[1] });
-            }
-        }
-
         // Create fixed buffer stream from our collected data
         var data_stream = std.io.fixedBufferStream(all_data.items);
 
@@ -399,7 +391,6 @@ fn parseIdat(self: *Decoder, length: u32) !void {
         // Read the image data using the decompressed reader
         self.img = try self.readImagePass(decompress_stream.reader(), 0, false);
     } else {
-        std.debug.print("Warning: No IDAT data found\n", .{});
         return error.EmptyIdatData;
     }
 }
@@ -412,11 +403,9 @@ fn readImagePass(
     allocate_only: bool,
 ) !image.Image {
     _ = pass;
-    std.debug.print("readImagePass: starting with dimensions: width={d}, height={d}\n", .{ self.width, self.height });
 
     // Sanity check dimensions
     if (self.width == 0 or self.height == 0) {
-        std.debug.print("ERROR: Invalid dimensions for image: width={d}, height={d}\n", .{ self.width, self.height });
         return error.InvalidDimensions;
     }
 
@@ -448,7 +437,6 @@ fn readImagePass(
             rgba.* = try image.RGBAImage.init(self.al, rect);
             rgba_image = rgba;
             img = .{ .RGBA = rgba };
-            std.debug.print("Created RGBA image {d}x{d}\n", .{ self.width, self.height });
         },
         else => return error.Unimplemented,
     }
@@ -463,7 +451,6 @@ fn readImagePass(
 
     // The +1 is for the per-row filter type, which is at cr[0]
     const row_size: usize = 1 + ((bits_per_pixel * self.width) + 7) / 8;
-    std.debug.print("Row size: {d} bytes (including filter byte)\n", .{row_size});
 
     // Create current and previous row buffers (for filtering)
     var cr = try self.al.alloc(u8, row_size);
@@ -474,11 +461,10 @@ fn readImagePass(
     // Read the image data row by row
     var pixel_offset: usize = 0;
 
-    for (0..self.height) |y| {
+    for (0..self.height) |_| {
         // Read a row of data with filter byte
         const bytes_read = try reader.readAll(cr);
         if (bytes_read != row_size) {
-            std.debug.print("Error reading row {d}: expected {d} bytes, got {d}\n", .{ y, row_size, bytes_read });
             return error.IncompleteRowData;
         }
 
@@ -520,7 +506,6 @@ fn readImagePass(
                 filterPaeth(cdat, pdat, bytes_per_pixel);
             },
             else => {
-                std.debug.print("ERROR: Unknown filter type: {d}\n", .{cr[0]});
                 return error.InvalidFilterType;
             },
         }
@@ -621,19 +606,10 @@ fn readChunkHeader(self: *Decoder) !ChunkHeader {
 
     try self.r.readNoEof(self.scratch[0..8]);
 
-    // Log the raw header bytes
-    std.debug.print("Read chunk header: ", .{});
-    for (self.scratch[0..8]) |b| {
-        std.debug.print("{x:0>2} ", .{b});
-    }
-    std.debug.print("\n", .{});
-
     header.length = std.mem.readInt(u32, self.scratch[0..4], .big);
 
     @memcpy(&header.type_bytes, self.scratch[4..8]);
     header.chunk_type = ChunkType.fromBytes(&header.type_bytes);
-
-    std.debug.print("Interpreted as: type='{s}' ({d}), length={d}\n", .{ header.type_bytes, @intFromEnum(header.chunk_type), header.length });
 
     return header;
 }
