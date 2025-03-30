@@ -53,7 +53,10 @@ pub fn main() !void {
                 break :png img;
             } else return error.UnsupportedFileExtension;
 
-            defer img.free(allocator);
+            defer {
+                img.free(allocator);
+                allocator.destroy(img.RGBA);
+            }
             try draw(allocator, arg, img);
         }
     }
