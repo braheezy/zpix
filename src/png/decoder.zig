@@ -261,21 +261,21 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
     self.width = width;
     self.height = height;
 
-    self.color_depth = try switch (self.depth) {
+    self.color_depth = switch (self.depth) {
         1 => switch (self.color_type) {
             .grayscale => .g1,
             .paletted => .p1,
-            else => error.InvalidColorTypeDepthCombo,
+            else => return error.InvalidColorTypeDepthCombo,
         },
         2 => switch (self.color_type) {
             .grayscale => .g2,
             .paletted => .p2,
-            else => error.InvalidColorTypeDepthCombo,
+            else => return error.InvalidColorTypeDepthCombo,
         },
         4 => switch (self.color_type) {
             .grayscale => .g4,
             .paletted => .p4,
-            else => error.InvalidColorTypeDepthCombo,
+            else => return error.InvalidColorTypeDepthCombo,
         },
         8 => switch (self.color_type) {
             .grayscale => .g8,
@@ -289,9 +289,9 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
             .truecolor => .tc16,
             .grayscale_alpha => .ga16,
             .truecolor_alpha => .tca16,
-            else => error.InvalidColorTypeDepthCombo,
+            else => return error.InvalidColorTypeDepthCombo,
         },
-        else => error.UnsupportedBitDepth,
+        else => return error.UnsupportedBitDepth,
     };
 
     std.debug.print("ihdr: {d}x{d} {s} {s}\n", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
