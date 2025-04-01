@@ -1,12 +1,13 @@
 .{
-    .name = "zjpeg",
+    .name = .zjpeg,
 
     .version = "0.1.0",
+    .fingerprint = 0xbe761b5d0e94f5ed,
 
     .dependencies = .{
         .SDL = .{
             .url = "git+https://github.com/allyourcodebase/SDL#0466e880e600b091940913b23d926d5ec5cfdec2",
-            .hash = "122049871919faf5a46bb26f1664dc140f9fecdec0d7116ccbf536dc3379738e2096",
+            .hash = "SDL-2.32.2-JToi31GUEgGOf7m8tPCktmPE1Z0cO8bfst98IDm6xJw4",
             .lazy = false,
         },
     },
