@@ -506,7 +506,7 @@ fn readImagePass(
         .g1, .g2, .g4, .g8 => {
             gray = try self.allocator.create(image.GrayImage);
             gray.* = try image.GrayImage.init(self.allocator, rect);
-            img = .{ .Gray = gray };
+            img = .{ .Gray = gray.* };
         },
         .tc8 => {
             rgba = try self.allocator.create(image.RGBAImage);
