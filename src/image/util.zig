@@ -10,7 +10,7 @@ const image = @import("main.zig");
 pub fn drawYCbCr(
     dst: *image.RGBAImage,
     rect: image.Rectangle,
-    src: *image.YCbCrImage,
+    src: image.YCbCrImage,
     sp: image.Point,
 ) !bool {
     const x0 = (rect.min.x - dst.rect.min.x) * 4;
