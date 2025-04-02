@@ -55,7 +55,6 @@ pub fn main() !void {
 
             defer {
                 img.free(allocator);
-                allocator.destroy(img.RGBA);
             }
             try draw(allocator, arg, img);
         }
@@ -151,6 +150,11 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
         while (sdl.SDL_PollEvent(&event) != 0) {
             switch (event.type) {
                 sdl.SDL_QUIT => running = false,
+                sdl.SDL_KEYDOWN => {
+                    if (event.key.keysym.sym == sdl.SDLK_ESCAPE) {
+                        running = false;
+                    }
+                },
                 else => {},
             }
         }

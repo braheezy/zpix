@@ -17,8 +17,8 @@ pub const Config = struct {
 pub const Image = union(enum) {
     Gray: GrayImage,
     YCbCr: YCbCrImage,
-    RGBA: *RGBAImage,
-    CMYK: *CMYKImage,
+    RGBA: RGBAImage,
+    CMYK: CMYKImage,
 
     // bounds returns the domain for which At can return non-zero color.
     // The bounds do not necessarily contain the point (0, 0).
@@ -45,12 +45,18 @@ pub const Image = union(enum) {
 
     pub fn free(self: Image, al: std.mem.Allocator) void {
         switch (self) {
-            .Gray => |img| al.free(img.pixels),
+            .Gray => |img| {
+                al.free(img.pixels);
+            },
             .YCbCr => |img| {
                 al.free(img.pixels);
             },
-            .RGBA => |img| al.free(img.pixels),
-            .CMYK => |img| al.free(img.pixels),
+            .RGBA => |img| {
+                al.free(img.pixels);
+            },
+            .CMYK => |img| {
+                al.free(img.pixels);
+            },
         }
     }
 
@@ -104,11 +110,10 @@ pub const RGBAImage = struct {
         };
     }
 
-    pub fn subImage(self: *RGBAImage, al: std.mem.Allocator, rect: Rectangle) !?*RGBAImage {
+    pub fn subImage(self: *RGBAImage, rect: Rectangle) !?RGBAImage {
         if (rect.Intersect(self.rect)) |r| {
             const i: usize = @intCast(self.pixOffset(r.min.x, r.min.y));
-            const sub_img = try al.create(RGBAImage);
-            sub_img.* = .{
+            const sub_img = RGBAImage{
                 .pixels = self.pixels[i..],
                 .stride = self.stride,
                 .rect = r,
@@ -121,20 +126,20 @@ pub const RGBAImage = struct {
 
     // pixOffset returns the index of the first element of Pix that corresponds to
     // the pixel at (x, y).
-    pub fn pixOffset(self: *RGBAImage, x: i32, y: i32) i32 {
+    pub fn pixOffset(self: RGBAImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
         return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
     }
 
-    pub fn bounds(self: *RGBAImage) Rectangle {
+    pub fn bounds(self: RGBAImage) Rectangle {
         return self.rect;
     }
 
-    pub fn at(self: *RGBAImage, x: i32, y: i32) Color {
+    pub fn at(self: RGBAImage, x: i32, y: i32) Color {
         return self.rgbaAt(x, y);
     }
 
-    pub fn rgbaAt(self: *RGBAImage, x: i32, y: i32) Color {
+    pub fn rgbaAt(self: RGBAImage, x: i32, y: i32) Color {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
             return Color{ .RGBA = .{} };
@@ -242,20 +247,28 @@ pub const YCbCrImage = struct {
         return .{ w, h, cw, ch };
     }
 
-    pub fn subImage(self: *YCbCrImage, rect: Rectangle) !?YCbCrImage {
+    pub fn subImage(self: YCbCrImage, allocator: std.mem.Allocator, rect: Rectangle) !?YCbCrImage {
         if (rect.Intersect(self.rect)) |r| {
             const yi: usize = @intCast(self.yOffset(r.min.x, r.min.y));
             const ci: usize = @intCast(self.cOffset(r.min.x, r.min.y));
 
+            const pixels = try allocator.alloc(u8, self.pixels.len);
+            @memcpy(pixels, self.pixels);
+
+            // Calculate the offsets in the original buffer
+            const y_offset = @intFromPtr(self.y.ptr) - @intFromPtr(self.pixels.ptr);
+            const cb_offset = @intFromPtr(self.cb.ptr) - @intFromPtr(self.pixels.ptr);
+            const cr_offset = @intFromPtr(self.cr.ptr) - @intFromPtr(self.pixels.ptr);
+
             return YCbCrImage{
-                .y = self.y[yi..],
-                .cb = self.cb[ci..],
-                .cr = self.cr[ci..],
+                .y = pixels[y_offset..][yi..],
+                .cb = pixels[cb_offset..][ci..],
+                .cr = pixels[cr_offset..][ci..],
                 .y_stride = self.y_stride,
                 .c_stride = self.c_stride,
                 .subsample_ratio = self.subsample_ratio,
                 .rect = r,
-                .pixels = self.pixels,
+                .pixels = pixels,
             };
         } else {
             return null;
@@ -336,13 +349,6 @@ pub const GrayImage = struct {
                 .stride = self.stride,
                 .rect = r,
             };
-            // const grey = try al.create(GrayImage);
-            // sub_img.* = .{
-            //     .pixels = self.pixels[i..],
-            //     .stride = self.stride,
-            //     .rect = r,
-            // };
-            // return sub_img;
         } else {
             return null;
         }
@@ -407,7 +413,7 @@ pub const CMYKImage = struct {
 
     // pixOffset returns the index of the first element of Pix that corresponds to
     // the pixel at (x, y).
-    pub fn pixOffset(self: *CMYKImage, x: i32, y: i32) i32 {
+    pub fn pixOffset(self: CMYKImage, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
         return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
     }
@@ -415,10 +421,10 @@ pub const CMYKImage = struct {
     pub fn bounds(self: CMYKImage) Rectangle {
         return self.rect;
     }
-    pub fn at(self: *CMYKImage, x: i32, y: i32) Color {
+    pub fn at(self: CMYKImage, x: i32, y: i32) Color {
         return self.CMYKAt(x, y);
     }
-    pub fn CMYKAt(self: *CMYKImage, x: i32, y: i32) Color {
+    pub fn CMYKAt(self: CMYKImage, x: i32, y: i32) Color {
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {

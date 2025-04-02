@@ -483,8 +483,8 @@ fn readImagePass(
     // Prepare variables for different image types, similar to Go's implementation
     var img: image.Image = undefined;
     // Only keep the variable we're currently using
-    var rgba: *image.RGBAImage = undefined;
-    var gray: *image.GrayImage = undefined;
+    var rgba: image.RGBAImage = undefined;
+    var gray: image.GrayImage = undefined;
 
     // Calculate bits per pixel based on color depth
     const bits_per_pixel: u8 = switch (self.color_depth) {
@@ -504,13 +504,12 @@ fn readImagePass(
     // Create the image based on color type, setting the appropriate pointer
     switch (self.color_depth) {
         .g1, .g2, .g4, .g8 => {
-            gray = try self.allocator.create(image.GrayImage);
-            gray.* = try image.GrayImage.init(self.allocator, rect);
-            img = .{ .Gray = gray.* };
+            gray = try image.GrayImage.init(self.allocator, rect);
+            img = .{ .Gray = gray };
         },
         .tc8 => {
-            rgba = try self.allocator.create(image.RGBAImage);
-            rgba.* = try image.RGBAImage.init(self.allocator, rect);
+            // rgba = try self.allocator.create(image.RGBAImage);
+            rgba = try image.RGBAImage.init(self.allocator, rect);
             img = .{ .RGBA = rgba };
         },
         // Add cases for other color types as you implement them

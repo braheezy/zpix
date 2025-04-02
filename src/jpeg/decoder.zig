@@ -119,7 +119,8 @@ width: u32 = 0,
 height: u32 = 0,
 
 // destination image data
-// img1: ?*image.GrayImage = null,
+gray_img: ?*image.GrayImage = null,
+ycbcr_img: ?*image.YCbCrImage = null,
 img: ?image.Image = null,
 black_pixels: ?[]u8 = null,
 black_stride: usize = 0,
@@ -218,9 +219,10 @@ fn decodeInner(self: *Decoder, config_only: bool) !image.Image {
     errdefer {
         // If there's errors during decoding, free allocated memory
         // to prevent leaks.
-        if (self.img != null) {
-            self.img.?.free(self.al);
+        if (self.img) |img| {
+            img.free(self.al);
         }
+
         if (self.black_pixels != null) {
             self.al.free(self.black_pixels.?);
         }
@@ -780,7 +782,7 @@ pub fn convertToRGB(self: *Decoder) !image.Image {
             img.pixels[po + 4 * i + 3] = 255;
         }
     }
-    return .{ .RGBA = &img };
+    return .{ .RGBA = img };
 }
 
 /// applyBlack combines self.img and self.black_pixels into a CMYK image.
@@ -845,7 +847,7 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         cmyk_img.pixels = img.pixels;
         cmyk_img.stride = img.stride;
         cmyk_img.rect = img.rect;
-        return .{ .CMYK = &cmyk_img };
+        return .{ .CMYK = cmyk_img };
     }
 
     // The first three channels (cyan, magenta, yellow) of the CMYK were decoded into self.img3,
@@ -902,7 +904,7 @@ pub fn applyBlack(self: *Decoder) !image.Image {
         }
     }
 
-    return .{ .CMYK = &img };
+    return .{ .CMYK = img };
 }
 
 //===================================//
@@ -1757,14 +1759,20 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
         8 * h0 * mxx,
         8 * v0 * myy,
     ), subsample_ratio);
+    defer self.al.free(img.pixels);
 
     // Create a sub-image with the exact dimensions of the JPEG.
-    self.img = image.Image{ .YCbCr = try img.subImage(image.Rectangle.init(
-        0,
-        0,
-        @intCast(self.width),
-        @intCast(self.height),
-    )) orelse return error.CreateImageFailed };
+    const sub_img = try img.subImage(
+        self.al,
+        image.Rectangle.init(
+            0,
+            0,
+            @intCast(self.width),
+            @intCast(self.height),
+        ),
+    ) orelse return error.CreateImageFailed;
+
+    self.img = image.Image{ .YCbCr = sub_img };
 
     if (self.num_components == 4) {
         // Allocate space for the black channel if there are four components (CMYK).
