@@ -124,6 +124,7 @@ ycbcr_img: ?image.YCbCrImage = null,
 img: ?image.Image = null,
 black_pixels: ?[]u8 = null,
 black_stride: usize = 0,
+previous_gray_all_pixels: ?[]u8 = null,
 
 restart_interval: u16 = 0,
 num_components: u8 = 0,
@@ -1705,6 +1706,12 @@ pub fn findRst(self: *Decoder, expected_rst: u8) !void {
 // makeImg allocates and initializes the destination image.
 fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
     if (self.num_components == 1) {
+        // Free any previous gray image allocation from progressive scans
+        if (self.previous_gray_all_pixels) |pixels| {
+            self.al.free(pixels);
+            self.previous_gray_all_pixels = null;
+        }
+
         // Allocate a grayscale image if there's only one component.
         const gray_image: image.GrayImage = try image.GrayImage.init(self.al, image.Rectangle.init(
             0,
@@ -1712,7 +1719,6 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
             8 * mxx,
             8 * myy,
         ));
-        // Create a sub-image with the exact dimensions of the JPEG.
         self.gray_img = try gray_image.subImage(
             image.Rectangle.init(
                 0,
@@ -1722,6 +1728,9 @@ fn makeImg(self: *Decoder, mxx: i32, myy: i32) !void {
             ),
         ) orelse return error.CreateImageFailed;
 
+        if (self.progressive) {
+            self.previous_gray_all_pixels = self.gray_img.?.pixels;
+        }
         return;
     }
 
