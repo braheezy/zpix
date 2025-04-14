@@ -38,15 +38,16 @@ pub fn build(b: *std.Build) !void {
     });
 
     // Dependencies
-    const sdl_dep = b.lazyDependency("SDL", .{
+    if (b.lazyDependency("SDL", .{
         .optimize = optimize,
         .target = target,
-    });
-    const sdl_artifact = sdl_dep.?.artifact("SDL2");
-    for (sdl_artifact.root_module.include_dirs.items) |include_dir| {
-        try exe.root_module.include_dirs.append(b.allocator, include_dir);
+    })) |sdl_dep| {
+        const sdl_artifact = sdl_dep.artifact("SDL2");
+        for (sdl_artifact.root_module.include_dirs.items) |include_dir| {
+            try exe.root_module.include_dirs.append(b.allocator, include_dir);
+        }
+        exe.linkLibrary(sdl_artifact);
     }
-    exe.linkLibrary(sdl_artifact);
 
     b.installArtifact(exe);
 
