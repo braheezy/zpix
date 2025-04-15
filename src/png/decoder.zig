@@ -1,6 +1,8 @@
 const std = @import("std");
 const image = @import("image");
 const mem = std.mem;
+const Color = image.Color;
+const Gray = image.Gray;
 
 const png_header = "\x89PNG\r\n\x1a\n";
 
@@ -482,7 +484,6 @@ fn readImagePass(
 
     // Prepare variables for different image types, similar to Go's implementation
     var img: image.Image = undefined;
-    // Only keep the variable we're currently using
     var rgba: image.RGBAImage = undefined;
     var gray: image.GrayImage = undefined;
 
@@ -535,7 +536,7 @@ fn readImagePass(
     // Read the image data row by row
     var pixel_offset: usize = 0;
 
-    for (0..height) |_| {
+    for (0..height) |y| {
         // Read a row of data with filter byte
         const bytes_read = try reader.readAll(cr);
         if (bytes_read != row_size) {
@@ -607,6 +608,45 @@ fn readImagePass(
                 }
 
                 pixel_offset += rgba_img.stride;
+            },
+            .g1 => {
+                for (0..width) |x| {
+                    var bit_index = cdat[x / 8];
+                    var x2: usize = 0;
+                    while (x2 < 8 and x + x2 < width) : (x2 += 1) {
+                        const bit_value = (bit_index >> 7) * 0xff;
+                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        bit_index <<= 1;
+                    }
+                }
+            },
+            .g2 => {
+                var x: usize = 0;
+                while (x < width) : (x += 4) {
+                    var bit_index = cdat[x / 4];
+                    var x2: usize = 0;
+                    while (x2 < 4 and x + x2 < width) : (x2 += 1) {
+                        const bit_value = (bit_index >> 6) * 0x55;
+                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        bit_index <<= 2;
+                    }
+                }
+            },
+            .g4 => {
+                var x: usize = 0;
+                while (x < width) : (x += 2) {
+                    var bit_index = cdat[x / 2];
+                    var x2: usize = 0;
+                    while (x2 < 2 and x + x2 < width) : (x2 += 1) {
+                        const bit_value = (bit_index >> 4) * 0x11;
+                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        bit_index <<= 4;
+                    }
+                }
+            },
+            .g8 => {
+                @memcpy(gray.pixels[pixel_offset..][0..cdat.len], cdat);
+                pixel_offset += gray.stride;
             },
             // Add cases for other color types as you implement them
             else => return error.Unimplemented,
