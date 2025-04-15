@@ -15,10 +15,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
     var bufferedReader = std.io.bufferedReader(png_file.reader());
     const reader = bufferedReader.reader().any();
 
-    const img = decode(allocator, reader) catch |err| {
-        std.log.err("Failed to decode png file: {any}", .{err});
-        return err;
-    };
+    const img = try decode(allocator, reader);
 
     return img;
 }

@@ -2,8 +2,10 @@ const std = @import("std");
 const geom = @import("geometry.zig");
 const Rectangle = geom.Rectangle;
 const Point = geom.Point;
-const Color = @import("color.zig").Color;
-const Model = @import("color.zig").Model;
+const color = @import("color.zig");
+const Color = color.Color;
+const Model = color.Model;
+const Gray = color.Gray;
 
 /// Config holds an image's color model and dimensions.
 pub const Config = struct {
@@ -76,8 +78,8 @@ pub const Image = union(enum) {
         while (y < rect.max.y) : (y += 1) {
             var x: i32 = rect.min.x;
             while (x < rect.max.x) : (x += 1) {
-                const color = self.at(x, y);
-                const rgba = color.toRGBA();
+                const c = self.at(x, y);
+                const rgba = c.toRGBA();
                 const i = @as(usize, @intCast((y - rect.min.y) * width + (x - rect.min.x))) * 4;
 
                 // Convert from 16-bit per channel to 8-bit per channel
@@ -142,11 +144,11 @@ pub const RGBAImage = struct {
     pub fn rgbaAt(self: RGBAImage, x: i32, y: i32) Color {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color{ .RGBA = .{} };
+            return Color{ .rgba = .{} };
         }
         const i: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[i .. i + 4];
-        return Color.rgba(
+        return Color.fromRGBA(
             s[0],
             s[1],
             s[2],
@@ -308,14 +310,14 @@ pub const YCbCrImage = struct {
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color{ .YCbCr = .{ .y = 0, .cb = 0, .cr = 0 } };
+            return Color{ .ycbcr = .{ .y = 0, .cb = 0, .cr = 0 } };
         }
 
         // Calculate offsets for Y and Cb/Cr.
         const yi: usize = @intCast(self.yOffset(x, y));
         const ci: usize = @intCast(self.cOffset(x, y));
 
-        return Color{ .YCbCr = .{
+        return Color{ .ycbcr = .{
             .y = self.y[yi],
             .cb = self.cb[ci],
             .cr = self.cr[ci],
@@ -371,10 +373,19 @@ pub const GrayImage = struct {
     fn grayAt(self: GrayImage, x: i32, y: i32) Color {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color.gray(0);
+            return Color.fromGray(0);
         }
         const i = self.pixOffset(x, y);
-        return Color.gray(self.pixels[@intCast(i)]);
+        return Color.fromGray(self.pixels[@intCast(i)]);
+    }
+
+    pub fn setGray(self: GrayImage, x: i32, y: i32, c: Gray) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index = self.pixOffset(x, y);
+        self.pixels[@intCast(pixel_index)] = c.y;
     }
 };
 
@@ -428,11 +439,11 @@ pub const CMYKImage = struct {
         // Check if the point (x, y) is within the rectangle.
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color{ .CMYK = .{} };
+            return Color{ .cmyk = .{} };
         }
         const i: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[i .. i + 4];
-        return Color{ .CMYK = .{
+        return Color{ .cmyk = .{
             .c = s[0],
             .m = s[1],
             .y = s[2],

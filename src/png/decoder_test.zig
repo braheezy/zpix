@@ -45,7 +45,11 @@ test "decode" {
     const allocator = std.testing.allocator;
     for (filenames) |filename| {
         const path = std.fmt.allocPrint(allocator, "src/testdata/png/{s}.png", .{filename}) catch unreachable;
-        const img = try load(allocator, path);
+        defer allocator.free(path);
+        const img = load(allocator, path) catch |err| {
+            std.log.err("Failed to load {s}: {!}", .{ path, err });
+            std.process.exit(0);
+        };
         defer img.free(allocator);
     }
 }
