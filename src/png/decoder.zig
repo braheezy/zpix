@@ -486,6 +486,7 @@ fn readImagePass(
     var img: image.Image = undefined;
     var rgba: image.RGBAImage = undefined;
     var gray: image.GrayImage = undefined;
+    var gray16: image.Gray16Image = undefined;
 
     // Calculate bits per pixel based on color depth
     const bits_per_pixel: u8 = switch (self.color_depth) {
@@ -508,13 +509,20 @@ fn readImagePass(
             gray = try image.GrayImage.init(self.allocator, rect);
             img = .{ .Gray = gray };
         },
+        .g16 => {
+            gray16 = try image.Gray16Image.init(self.allocator, rect);
+            img = .{ .Gray16 = gray16 };
+        },
         .tc8 => {
             // rgba = try self.allocator.create(image.RGBAImage);
             rgba = try image.RGBAImage.init(self.allocator, rect);
             img = .{ .RGBA = rgba };
         },
         // Add cases for other color types as you implement them
-        else => return error.Unimplemented,
+        else => {
+            std.log.err("Unimplemented color type 1: {s}\n", .{@tagName(self.color_depth)});
+            return error.Unimplemented;
+        },
     }
 
     // If this is allocate_only, the reader will not be used
@@ -615,7 +623,7 @@ fn readImagePass(
                     var x2: usize = 0;
                     while (x2 < 8 and x + x2 < width) : (x2 += 1) {
                         const bit_value = (bit_index >> 7) * 0xff;
-                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
                         bit_index <<= 1;
                     }
                 }
@@ -627,7 +635,7 @@ fn readImagePass(
                     var x2: usize = 0;
                     while (x2 < 4 and x + x2 < width) : (x2 += 1) {
                         const bit_value = (bit_index >> 6) * 0x55;
-                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
                         bit_index <<= 2;
                     }
                 }
@@ -639,7 +647,7 @@ fn readImagePass(
                     var x2: usize = 0;
                     while (x2 < 2 and x + x2 < width) : (x2 += 1) {
                         const bit_value = (bit_index >> 4) * 0x11;
-                        gray.setGray(@intCast(x + x2), @intCast(y), Gray{ .y = bit_value });
+                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
                         bit_index <<= 4;
                     }
                 }
@@ -648,8 +656,17 @@ fn readImagePass(
                 @memcpy(gray.pixels[pixel_offset..][0..cdat.len], cdat);
                 pixel_offset += gray.stride;
             },
+            .g16 => {
+                for (0..width) |x| {
+                    const y_column = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[x * 2 + 1]));
+                    gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_column });
+                }
+            },
             // Add cases for other color types as you implement them
-            else => return error.Unimplemented,
+            else => {
+                std.log.err("Unimplemented color type 2: {s}\n", .{@tagName(self.color_depth)});
+                return error.Unimplemented;
+            },
         }
 
         // Swap current and previous row for next iteration

@@ -19,6 +19,7 @@ const image = @import("image.zig");
 pub const Image = image.Image;
 pub const Config = image.Config;
 pub const GrayImage = image.GrayImage;
+pub const Gray16Image = image.Gray16Image;
 pub const RGBAImage = image.RGBAImage;
 pub const YCbCrImage = image.YCbCrImage;
 pub const CMYKImage = image.CMYKImage;

@@ -6,6 +6,7 @@ const color = @import("color.zig");
 const Color = color.Color;
 const Model = color.Model;
 const Gray = color.Gray;
+const Gray16 = color.Gray16;
 
 /// Config holds an image's color model and dimensions.
 pub const Config = struct {
@@ -18,6 +19,7 @@ pub const Config = struct {
 /// model.
 pub const Image = union(enum) {
     Gray: GrayImage,
+    Gray16: Gray16Image,
     YCbCr: YCbCrImage,
     RGBA: RGBAImage,
     CMYK: CMYKImage,
@@ -27,6 +29,7 @@ pub const Image = union(enum) {
     pub fn bounds(self: Image) Rectangle {
         return switch (self) {
             .Gray => |img| img.bounds(),
+            .Gray16 => |img| img.bounds(),
             .YCbCr => |img| img.bounds(),
             .RGBA => |img| img.bounds(),
             .CMYK => |img| img.bounds(),
@@ -39,6 +42,7 @@ pub const Image = union(enum) {
     pub fn at(self: Image, x: i32, y: i32) Color {
         return switch (self) {
             .Gray => |img| img.at(x, y),
+            .Gray16 => |img| img.at(x, y),
             .YCbCr => |img| img.at(x, y),
             .RGBA => |img| img.at(x, y),
             .CMYK => |img| img.at(x, y),
@@ -48,6 +52,9 @@ pub const Image = union(enum) {
     pub fn free(self: Image, al: std.mem.Allocator) void {
         switch (self) {
             .Gray => |img| {
+                al.free(img.pixels);
+            },
+            .Gray16 => |img| {
                 al.free(img.pixels);
             },
             .YCbCr => |img| {
@@ -367,16 +374,16 @@ pub const GrayImage = struct {
     }
 
     pub fn at(self: GrayImage, x: i32, y: i32) Color {
-        return self.grayAt(x, y);
+        return Color.fromGray(self.grayAt(x, y));
     }
 
-    fn grayAt(self: GrayImage, x: i32, y: i32) Color {
+    fn grayAt(self: GrayImage, x: i32, y: i32) u8 {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color.fromGray(0);
+            return 0;
         }
         const i = self.pixOffset(x, y);
-        return Color.fromGray(self.pixels[@intCast(i)]);
+        return self.pixels[@intCast(i)];
     }
 
     pub fn setGray(self: GrayImage, x: i32, y: i32, c: Gray) void {
@@ -386,6 +393,71 @@ pub const GrayImage = struct {
         }
         const pixel_index = self.pixOffset(x, y);
         self.pixels[@intCast(pixel_index)] = c.y;
+    }
+};
+
+pub const Gray16Image = struct {
+    pixels: []u8 = undefined,
+    stride: usize = 0,
+    rect: Rectangle = undefined,
+
+    pub fn init(
+        al: std.mem.Allocator,
+        rect: Rectangle,
+    ) !Gray16Image {
+        const pixel_len = pixelBufferLength(2, rect, "Gray16");
+        const pixels = try al.alloc(u8, pixel_len);
+        return Gray16Image{
+            .pixels = pixels,
+            .stride = @intCast(2 * rect.dX()),
+            .rect = rect,
+        };
+    }
+
+    pub fn subImage(self: Gray16Image, rect: Rectangle) !?Gray16Image {
+        if (rect.Intersect(self.rect)) |r| {
+            const i: usize = @intCast(self.pixOffset(r.min.x, r.min.y));
+            return Gray16Image{
+                .pixels = self.pixels[i..],
+                .stride = self.stride,
+                .rect = r,
+            };
+        } else {
+            return null;
+        }
+    }
+    // PixOffset returns the index of the first element of Pix that corresponds to
+    // the pixel at (x, y).
+    pub fn pixOffset(self: Gray16Image, x: i32, y: i32) i32 {
+        const i: i32 = @intCast(self.stride);
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 1;
+    }
+
+    pub fn bounds(self: Gray16Image) Rectangle {
+        return self.rect;
+    }
+
+    pub fn at(self: Gray16Image, x: i32, y: i32) Color {
+        return Color.fromGray16(self.gray16At(x, y));
+    }
+
+    fn gray16At(self: Gray16Image, x: i32, y: i32) u8 {
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return 0;
+        }
+        const i = self.pixOffset(x, y);
+        return self.pixels[@intCast(i)];
+    }
+
+    pub fn setGray16(self: Gray16Image, x: i32, y: i32, c: Gray16) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index = self.pixOffset(x, y);
+        self.pixels[@intCast(pixel_index)] = @intCast(c.y >> 8);
+        self.pixels[@intCast(pixel_index + 1)] = @intCast(c.y & 0xff);
     }
 };
 

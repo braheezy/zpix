@@ -1,4 +1,5 @@
 pub const Gray = struct { y: u8 = 0 };
+pub const Gray16 = struct { y: u16 = 0 };
 pub const RGB = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0 };
 pub const RGBA = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
 pub const YCbCr = struct { y: u8 = 0, cb: u8 = 0, cr: u8 = 0 };
@@ -84,6 +85,10 @@ pub const Color = union(enum) {
 
     pub fn fromGray(y: u8) Color {
         return Color{ .gray = .{ .y = y } };
+    }
+
+    pub fn fromGray16(y: u16) Color {
+        return Color{ .gray16 = .{ .y = y } };
     }
 
     pub fn fromYCbCr(y: u8, cb: u8, cr: u8) Color {
