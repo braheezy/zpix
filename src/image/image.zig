@@ -7,6 +7,7 @@ const Color = color.Color;
 const Model = color.Model;
 const Gray = color.Gray;
 const Gray16 = color.Gray16;
+const RGBA64 = color.RGBA64;
 
 /// Config holds an image's color model and dimensions.
 pub const Config = struct {
@@ -22,6 +23,7 @@ pub const Image = union(enum) {
     Gray16: Gray16Image,
     YCbCr: YCbCrImage,
     RGBA: RGBAImage,
+    RGBA64: RGBA64Image,
     CMYK: CMYKImage,
 
     // bounds returns the domain for which At can return non-zero color.
@@ -32,6 +34,7 @@ pub const Image = union(enum) {
             .Gray16 => |img| img.bounds(),
             .YCbCr => |img| img.bounds(),
             .RGBA => |img| img.bounds(),
+            .RGBA64 => |img| img.bounds(),
             .CMYK => |img| img.bounds(),
         };
     }
@@ -45,6 +48,7 @@ pub const Image = union(enum) {
             .Gray16 => |img| img.at(x, y),
             .YCbCr => |img| img.at(x, y),
             .RGBA => |img| img.at(x, y),
+            .RGBA64 => |img| img.at(x, y),
             .CMYK => |img| img.at(x, y),
         };
     }
@@ -61,6 +65,9 @@ pub const Image = union(enum) {
                 al.free(img.pixels);
             },
             .RGBA => |img| {
+                al.free(img.pixels);
+            },
+            .RGBA64 => |img| {
                 al.free(img.pixels);
             },
             .CMYK => |img| {
@@ -161,6 +168,86 @@ pub const RGBAImage = struct {
             s[2],
             s[3],
         );
+    }
+};
+
+pub const RGBA64Image = struct {
+    pixels: []u8 = undefined,
+    stride: usize = 0,
+    rect: Rectangle = undefined,
+
+    pub fn init(
+        al: std.mem.Allocator,
+        rect: Rectangle,
+    ) !RGBA64Image {
+        const pixel_len = pixelBufferLength(8, rect, "RGBA64");
+        const pixels = try al.alloc(u8, pixel_len);
+        return RGBA64Image{
+            .pixels = pixels,
+            .stride = @intCast(rect.dX() * 8),
+            .rect = rect,
+        };
+    }
+
+    pub fn subImage(self: *RGBA64Image, rect: Rectangle) !?RGBA64Image {
+        if (rect.Intersect(self.rect)) |r| {
+            const i: usize = @intCast(self.pixOffset(r.min.x, r.min.y));
+            const sub_img = RGBA64Image{
+                .pixels = self.pixels[i..],
+                .stride = self.stride,
+                .rect = r,
+            };
+            return sub_img;
+        } else {
+            return null;
+        }
+    }
+
+    // pixOffset returns the index of the first element of Pix that corresponds to
+    // the pixel at (x, y).
+    pub fn pixOffset(self: RGBA64Image, x: i32, y: i32) i32 {
+        const i: i32 = @intCast(self.stride);
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 8;
+    }
+
+    pub fn bounds(self: RGBA64Image) Rectangle {
+        return self.rect;
+    }
+
+    pub fn at(self: RGBA64Image, x: i32, y: i32) Color {
+        return self.rgba64At(x, y);
+    }
+
+    pub fn rgba64At(self: RGBA64Image, x: i32, y: i32) Color {
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return Color{ .rgba = .{} };
+        }
+        const i: usize = @intCast(self.pixOffset(x, y));
+        const s = self.pixels[i .. i + 8];
+        return Color.fromRGBA64(
+            @as(u16, @intCast(s[0])) << 8 | @as(u16, @intCast(s[1])),
+            @as(u16, @intCast(s[2])) << 8 | @as(u16, @intCast(s[3])),
+            @as(u16, @intCast(s[4])) << 8 | @as(u16, @intCast(s[5])),
+            @as(u16, @intCast(s[6])) << 8 | @as(u16, @intCast(s[7])),
+        );
+    }
+
+    pub fn setRGBA64(self: RGBA64Image, x: i32, y: i32, c: RGBA64) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index: usize = @intCast(self.pixOffset(x, y));
+        const s = self.pixels[pixel_index..];
+        s[0] = @intCast(c.r >> 8);
+        s[1] = @intCast(c.r & 0xff);
+        s[2] = @intCast(c.g >> 8);
+        s[3] = @intCast(c.g & 0xff);
+        s[4] = @intCast(c.b >> 8);
+        s[5] = @intCast(c.b & 0xff);
+        s[6] = @intCast(c.a >> 8);
+        s[7] = @intCast(c.a & 0xff);
     }
 };
 

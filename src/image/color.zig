@@ -2,6 +2,7 @@ pub const Gray = struct { y: u8 = 0 };
 pub const Gray16 = struct { y: u16 = 0 };
 pub const RGB = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0 };
 pub const RGBA = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
+pub const RGBA64 = struct { r: u16 = 0, g: u16 = 0, b: u16 = 0, a: u16 = 0 };
 pub const YCbCr = struct { y: u8 = 0, cb: u8 = 0, cr: u8 = 0 };
 const CMYK = struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 };
 
@@ -10,9 +11,11 @@ const CMYK = struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 };
 pub const Color = union(enum) {
     rgb: RGB,
     rgba: RGBA,
+    rgba64: RGBA64,
     ycbcr: YCbCr,
     cmyk: CMYK,
     gray: Gray,
+    gray16: Gray16,
 
     // RGBA returns the alpha-premultiplied red, green, blue and alpha values
     // for the color. Each value ranges within [0, 0xffff], but is represented
@@ -33,6 +36,13 @@ pub const Color = union(enum) {
                 b |= b << 8;
                 var a: u32 = @intCast(c.a);
                 a |= a << 8;
+                return .{ r, g, b, a };
+            },
+            .rgba64 => |c| {
+                const r: u32 = @intCast(c.r);
+                const g: u32 = @intCast(c.g);
+                const b: u32 = @intCast(c.b);
+                const a: u32 = @intCast(c.a);
                 return .{ r, g, b, a };
             },
             .ycbcr => |c| {
@@ -72,11 +82,19 @@ pub const Color = union(enum) {
                 y |= y << 8;
                 return .{ y, y, y, 0xffff };
             },
+            .gray16 => |c| {
+                const y: u32 = @intCast(c.y);
+                return .{ y, y, y, 0xffff };
+            },
         };
     }
 
     pub fn fromRGBA(r: u8, g: u8, b: u8, a: u8) Color {
         return Color{ .rgba = .{ .r = r, .g = g, .b = b, .a = a } };
+    }
+
+    pub fn fromRGBA64(r: u16, g: u16, b: u16, a: u16) Color {
+        return Color{ .rgba64 = .{ .r = r, .g = g, .b = b, .a = a } };
     }
 
     pub fn fromCMYK(c: u8, m: u8, y: u8, k: u8) Color {

@@ -21,6 +21,7 @@ pub const Config = image.Config;
 pub const GrayImage = image.GrayImage;
 pub const Gray16Image = image.Gray16Image;
 pub const RGBAImage = image.RGBAImage;
+pub const RGBA64Image = image.RGBA64Image;
 pub const YCbCrImage = image.YCbCrImage;
 pub const CMYKImage = image.CMYKImage;
 pub const YCbCrSubsample = image.YCbCrSubsample;
