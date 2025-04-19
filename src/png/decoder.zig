@@ -85,6 +85,7 @@ const ColorType = enum(u8) {
 };
 
 const ColorBitDepth = enum {
+    invalid,
     g1, // grayscale, 1 bit
     g2, // grayscale, 2 bits
     g4, // grayscale, 4 bits
@@ -176,7 +177,7 @@ fn parseChunk(self: *Decoder) !void {
     switch (chunk_header.chunk_type) {
         .ihdr => {
             if (self.stage != .start) {
-                return error.ChunkOrderError;
+                return error.ChunkOrderInHeaderError;
             }
             self.stage = .seen_ihdr;
             return try self.parseIhdr(chunk_header.length);
@@ -185,12 +186,20 @@ fn parseChunk(self: *Decoder) !void {
             const stage_int = @intFromEnum(self.stage);
             const seen_ihdr = @intFromEnum(Stage.seen_ihdr);
             const seen_idat = @intFromEnum(Stage.seen_idat);
-            if (stage_int < seen_ihdr or
-                stage_int > seen_idat or
-                (stage_int == seen_ihdr and
-                    colorDepthPaletted(self.color_depth)))
-            {
-                return error.ChunkOrderError;
+
+            const stage_1 = stage_int < seen_ihdr;
+            const stage_2 = stage_int > seen_idat;
+            const stage_3 = stage_int == seen_ihdr;
+            const stage_4 = colorDepthPaletted(self.color_depth);
+
+            if (stage_1 or stage_2 or (stage_3 and stage_4)) {
+                std.debug.print("stage_1: {any} stage_2: {any} stage_3: {any} stage_4: {any}\n", .{
+                    stage_1,
+                    stage_2,
+                    stage_3,
+                    stage_4,
+                });
+                return error.ChunkOrderIdatError;
             }
 
             if (self.stage != .seen_idat) {
@@ -205,7 +214,7 @@ fn parseChunk(self: *Decoder) !void {
         .iend => {
             // IEND must be the last chunk
             if (self.stage != .seen_idat) {
-                return error.ChunkOrderError;
+                return error.ChunkOrderIendError;
             }
             self.stage = .seen_iend;
             // IEND has no data, just verify the checksum
@@ -485,6 +494,7 @@ fn readImagePass(
     // Prepare variables for different image types, similar to Go's implementation
     var img: image.Image = undefined;
     var rgba: image.RGBAImage = undefined;
+    var rgba64: image.RGBA64Image = undefined;
     var gray: image.GrayImage = undefined;
     var gray16: image.Gray16Image = undefined;
 
@@ -501,6 +511,7 @@ fn readImagePass(
         .ga16 => 32,
         .tc16 => 48,
         .tca16 => 64,
+        .invalid => return error.InvalidColorDepth,
     };
 
     // Create the image based on color type, setting the appropriate pointer
@@ -517,6 +528,10 @@ fn readImagePass(
             // rgba = try self.allocator.create(image.RGBAImage);
             rgba = try image.RGBAImage.init(self.allocator, rect);
             img = .{ .RGBA = rgba };
+        },
+        .tc16 => {
+            rgba64 = try image.RGBA64Image.init(self.allocator, rect);
+            img = .{ .RGBA64 = rgba64 };
         },
         // Add cases for other color types as you implement them
         else => {
@@ -616,6 +631,14 @@ fn readImagePass(
                 }
 
                 pixel_offset += rgba_img.stride;
+            },
+            .tc16 => {
+                for (0..width) |x| {
+                    const r_col = @as(u16, @intCast(cdat[x * 6 + 0])) << 8 | @as(u16, @intCast(cdat[x * 6 + 1]));
+                    const g_col = @as(u16, @intCast(cdat[x * 6 + 2])) << 8 | @as(u16, @intCast(cdat[x * 6 + 3]));
+                    const b_col = @as(u16, @intCast(cdat[x * 6 + 4])) << 8 | @as(u16, @intCast(cdat[x * 6 + 5]));
+                    rgba64.setRGBA64(@intCast(x), @intCast(y), .{ .r = r_col, .g = g_col, .b = b_col, .a = 0xFFFF });
+                }
             },
             .g1 => {
                 for (0..width) |x| {
@@ -812,6 +835,11 @@ pub fn verifyChecksum(self: *Decoder) !void {
 }
 
 fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
+    std.debug.print("p1: {d}, p8: {d}, color_depth: {d}\n", .{
+        @intFromEnum(ColorBitDepth.p1),
+        @intFromEnum(ColorBitDepth.p8),
+        @intFromEnum(color_depth),
+    });
     return @intFromEnum(ColorBitDepth.p1) <= @intFromEnum(color_depth) and @intFromEnum(color_depth) <= @intFromEnum(ColorBitDepth.p8);
 }
 
