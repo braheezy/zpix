@@ -1,12 +1,11 @@
 const std = @import("std");
 const image = @import("zpix").image;
+const jpeg = @import("zpix").jpeg;
+const png = @import("zpix").png;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
 });
-
-const jpeg = @import("zpix").jpeg;
-const png = @import("zpix").png;
 
 const print = std.debug.print;
 

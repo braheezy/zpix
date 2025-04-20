@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    const lib_mod = b.createModule(.{
+    const lib_mod = b.addModule("zpix", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -34,15 +34,11 @@ pub fn build(b: *std.Build) !void {
     jpeg_mod.addImport("image", image_mod);
     png_mod.addImport("image", image_mod);
     png_mod.addImport("color", color_mod);
-    lib_mod.addImport("jpeg", jpeg_mod);
-    lib_mod.addImport("png", png_mod);
+
     lib_mod.addImport("image", image_mod);
     lib_mod.addImport("color", color_mod);
-
-    const lib = b.addStaticLibrary(.{
-        .name = "zpix",
-        .root_module = lib_mod,
-    });
+    lib_mod.addImport("jpeg", jpeg_mod);
+    lib_mod.addImport("png", png_mod);
 
     const jpeg_tests = b.addTest(.{ .root_module = jpeg_mod });
     const png_tests = b.addTest(.{ .root_module = png_mod });
@@ -56,8 +52,13 @@ pub fn build(b: *std.Build) !void {
     const test_step_png = b.step("test-png", "Run unit tests");
     test_step_png.dependOn(&run_png_tests.step);
 
+    const docs_lib = b.addStaticLibrary(.{
+        .name = "zpix",
+        .root_module = lib_mod,
+    });
+
     const install_docs = b.addInstallDirectory(.{
-        .source_dir = lib.getEmittedDocs(),
+        .source_dir = docs_lib.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
