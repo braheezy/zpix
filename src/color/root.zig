@@ -1,5 +1,6 @@
 const color = @import("color.zig");
 pub const Color = color.Color;
+pub const Palette = color.Palette;
 pub const Gray = color.Gray;
 pub const Gray16 = color.Gray16;
 pub const RGB = color.RGB;

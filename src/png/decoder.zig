@@ -2,6 +2,7 @@ const std = @import("std");
 const image = @import("image");
 const color = @import("color");
 const Color = color.Color;
+const Palette = color.Palette;
 const Gray = color.Gray;
 
 const png_header = "\x89PNG\r\n\x1a\n";
@@ -131,7 +132,7 @@ color_depth: ColorBitDepth = undefined,
 interlace: Interlace = .none,
 crc: std.hash.Crc32,
 stage: Stage = .start,
-palette: []color.Color = undefined,
+palette: Palette = undefined,
 idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
@@ -141,6 +142,8 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         .r = r,
         .crc = std.hash.Crc32.init(),
     };
+
+    defer allocator.free(d.palette);
 
     try d.checkHeader();
 
@@ -181,6 +184,13 @@ fn parseChunk(self: *Decoder) !void {
             }
             self.stage = .seen_ihdr;
             return try self.parseIhdr(chunk_header.length);
+        },
+        .plte => {
+            if (self.stage != .seen_ihdr) {
+                return error.ChunkOrderPlteError;
+            }
+            self.stage = .seen_plte;
+            return try self.parsePlte(chunk_header.length);
         },
         .idat => {
             const stage_int = @intFromEnum(self.stage);
@@ -453,6 +463,50 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
     }
 }
 
+fn parsePlte(self: *Decoder, length: u32) !void {
+    const num_palettes = length / 3;
+    if (length % 3 != 0 or num_palettes <= 0 or num_palettes > 256 or num_palettes > @as(u8, 1) << @as(u3, @truncate(self.depth))) {
+        return error.BadPlteLength;
+    }
+
+    try self.r.readNoEof(self.scratch[0 .. num_palettes * 3]);
+    self.crc.update(self.scratch[0 .. num_palettes * 3]);
+
+    switch (self.color_depth) {
+        .p1, .p2, .p4, .p8 => {
+            self.palette = try self.allocator.alloc(color.Color, num_palettes);
+            for (0..num_palettes) |i| {
+                self.palette[i] = .{ .rgba = .{
+                    .r = self.scratch[i * 3 + 0],
+                    .g = self.scratch[i * 3 + 1],
+                    .b = self.scratch[i * 3 + 2],
+                    .a = 0xFF,
+                } };
+            }
+
+            // var i = num_palettes;
+            // while (i < 256) : (i += 1) {
+            //     // Initialize the rest of the palette to opaque black. The spec (section
+            //     // 11.2.3) says that "any out-of-range pixel value found in the image data
+            //     // is an error", but some real-world PNG files have out-of-range pixel
+            //     // values. We fall back to opaque black, the same as libpng 1.5.13;
+            //     // ImageMagick 6.5.7 returns an error.
+            //     self.palette[i] = color.RGBA{ .r = 0, .g = 0, .b = 0, .a = 0xFF };
+            // }
+            // self.palette = self.palette[0..num_palettes];
+        },
+        .tc8, .tca8, .tc16, .tca16 => {
+            // As per the PNG spec, a PLTE chunk is optional (and for practical purposes,
+            // ignorable) for the ctTrueColor and ctTrueColorAlpha color types (section 4.1.2).
+        },
+        else => {
+            return error.PlteColorTypeMismatch;
+        },
+    }
+
+    return try self.verifyChecksum();
+}
+
 // readImagePass reads a single image pass, sized according to the pass number.
 fn readImagePass(
     self: *Decoder,
@@ -497,6 +551,7 @@ fn readImagePass(
     var rgba64: image.RGBA64Image = undefined;
     var gray: image.GrayImage = undefined;
     var gray16: image.Gray16Image = undefined;
+    var paletted: image.PalettedImage = undefined;
 
     // Calculate bits per pixel based on color depth
     const bits_per_pixel: u8 = switch (self.color_depth) {
@@ -532,6 +587,11 @@ fn readImagePass(
         .tc16 => {
             rgba64 = try image.RGBA64Image.init(self.allocator, rect);
             img = .{ .RGBA64 = rgba64 };
+        },
+        .p1, .p2, .p4, .p8 => {
+            // TODO: Implement
+            paletted = try image.PalettedImage.init(self.allocator, rect, self.palette);
+            img = .{ .Paletted = paletted };
         },
         // Add cases for other color types as you implement them
         else => {
@@ -685,6 +745,20 @@ fn readImagePass(
                     gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_column });
                 }
             },
+            .p1 => {
+                for (0..width) |x| {
+                    var bit_index = cdat[x / 8];
+                    var x2: usize = 0;
+                    while (x2 < 8 and x + x2 < width) : (x2 += 1) {
+                        const bit_value = bit_index >> 7;
+                        if (paletted.palette.len <= bit_value) {
+                            paletted.palette = paletted.palette[0 .. bit_value + 1];
+                        }
+                        paletted.setColorIndex(@intCast(x + x2), @intCast(y), @intCast(bit_value));
+                        bit_index <<= 1;
+                    }
+                }
+            },
             // Add cases for other color types as you implement them
             else => {
                 std.log.err("Unimplemented color type 2: {s}\n", .{@tagName(self.color_depth)});
@@ -736,17 +810,17 @@ fn filterPaeth(cdat: []u8, pdat: []u8, bytes_per_pixel: usize) void {
 
 fn skipChunk(self: *Decoder, length: u32) !void {
     // Read the chunk data into a buffer and update CRC
-    if (length > 0) {
-        const buf_size = @min(length, self.scratch.len);
-        var remaining = length;
+    // if (length > 0) {
+    const buf_size = @min(length, self.scratch.len);
+    var remaining = length;
 
-        while (remaining > 0) {
-            const to_read = @min(remaining, buf_size);
-            try self.r.readNoEof(self.scratch[0..to_read]);
-            self.crc.update(self.scratch[0..to_read]);
-            remaining -= to_read;
-        }
+    while (remaining > 0) {
+        const to_read = @min(remaining, buf_size);
+        try self.r.readNoEof(self.scratch[0..to_read]);
+        self.crc.update(self.scratch[0..to_read]);
+        remaining -= to_read;
     }
+    // }
 }
 
 const ChunkHeader = struct {

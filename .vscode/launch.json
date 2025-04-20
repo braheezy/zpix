@@ -8,8 +8,8 @@
       "type": "lldb",
       "request": "launch",
       "name": "Debug",
-      "program": "${workspaceFolder}/zig-out/bin/zjpeg",
-      "args": ["forest.png"],
+      "program": "${workspaceFolder}/zig-out/bin/zpixview",
+      "args": ["src/testdata/png/basn3p01.png"],
       "cwd": "${workspaceFolder}",
       "internalConsoleOptions": "openOnSessionStart",
       "preLaunchTask": "build"

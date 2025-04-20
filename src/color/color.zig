@@ -157,6 +157,7 @@ const Model = union(enum) {
     }
 };
 
+pub const Palette = []Color;
 /// rgbToYCbCr converts an RGB triple to a Y'CbCr triple.
 pub fn rgbToYCbCr(r: u8, g: u8, b: u8) struct { u8, u8, u8 } {
     // The JFIF specification says:

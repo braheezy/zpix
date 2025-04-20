@@ -25,7 +25,7 @@ pub const Image = union(enum) {
     RGBA: RGBAImage,
     RGBA64: RGBA64Image,
     CMYK: CMYKImage,
-
+    Paletted: PalettedImage,
     // bounds returns the domain for which At can return non-zero color.
     // The bounds do not necessarily contain the point (0, 0).
     pub fn bounds(self: Image) Rectangle {
@@ -36,6 +36,7 @@ pub const Image = union(enum) {
             .RGBA => |img| img.bounds(),
             .RGBA64 => |img| img.bounds(),
             .CMYK => |img| img.bounds(),
+            .Paletted => |img| img.bounds(),
         };
     }
 
@@ -50,6 +51,7 @@ pub const Image = union(enum) {
             .RGBA => |img| img.at(x, y),
             .RGBA64 => |img| img.at(x, y),
             .CMYK => |img| img.at(x, y),
+            .Paletted => |img| img.at(x, y),
         };
     }
 
@@ -72,6 +74,10 @@ pub const Image = union(enum) {
             },
             .CMYK => |img| {
                 al.free(img.pixels);
+            },
+            .Paletted => |img| {
+                al.free(img.pixels);
+                al.free(img.palette);
             },
         }
     }
@@ -608,6 +614,64 @@ pub const CMYKImage = struct {
             .y = s[2],
             .k = s[3],
         } };
+    }
+};
+
+pub const PalettedImage = struct {
+    // holds the image's pixels, as palette indices. The pixel at
+    // (x, y) starts at pixels[(y-rect.min.y)*stride + (x-rect.min.x)*1].
+    pixels: []u8 = undefined,
+    // the pixels stride (in bytes) between vertically adjacent pixels.
+    stride: usize = 0,
+    // the image's bounds.
+    rect: Rectangle = undefined,
+    // the image's palette.
+    palette: color.Palette = undefined,
+
+    pub fn init(
+        al: std.mem.Allocator,
+        rect: Rectangle,
+        palette: color.Palette,
+    ) !PalettedImage {
+        const pixel_len = pixelBufferLength(1, rect, "Paletted");
+        const pixels = try al.alloc(u8, pixel_len);
+
+        return PalettedImage{
+            .pixels = pixels,
+            .stride = @intCast(rect.dX()),
+            .rect = rect,
+            .palette = try al.dupe(color.Color, palette),
+        };
+    }
+
+    pub fn bounds(self: PalettedImage) Rectangle {
+        return self.rect;
+    }
+
+    pub fn at(self: PalettedImage, x: i32, y: i32) Color {
+        if (self.palette.len == 0) {
+            return Color{ .rgba = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+        }
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return self.palette[0];
+        }
+        const i = self.pixOffset(x, y);
+        return self.palette[self.pixels[@intCast(i)]];
+    }
+
+    pub fn pixOffset(self: PalettedImage, x: i32, y: i32) i32 {
+        const i: i32 = @intCast(self.stride);
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 1;
+    }
+
+    pub fn setColorIndex(self: PalettedImage, x: i32, y: i32, index: u8) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index: usize = @intCast(self.pixOffset(x, y));
+        self.pixels[pixel_index] = index;
     }
 };
 

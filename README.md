@@ -25,11 +25,14 @@ In your `build.zig`:
     const zpix = b.dependency("zpix", .{});
     root_module.addImport("zjpeg", zpix.module("jpeg"));
     root_module.addImport("png", zpix.module("png"));
+    // Or the whole module that has everything
+    exe.root_module.addImport("zpix", zpix.module("zpix"));
 
 In your program, load an image file
 
 ```zig
 const jpeg = @import("jpeg");
+// or const jpeg = @import("zpix").jpeg;
 
 const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
     try jpeg.load(allocator, arg)
