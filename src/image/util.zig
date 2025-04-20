@@ -1,4 +1,4 @@
-const image = @import("main.zig");
+const image = @import("root.zig");
 
 // drawYCbCr draws the YCbCr source image on the RGBA destination image with
 // rect.min in dst aligned with sp in src. It reports whether the draw was

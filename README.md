@@ -1,11 +1,17 @@
-# zjpeg
+# zpix
 
-A JPEG decoder in pure Zig. It supports:
+Image decoding library in pure Zig. It supports:
+
+**JPEG**
 
 - Baseline and Progressive formats
 - Gray, YCbCr, RGBA, and YCMK color formats.
 
-Here's proof! The Mac image viewer on the left, and a SDL image viewer in Zig using `zjpeg`:
+**PNG**
+
+- Basic truecolor, some gray
+
+Here's proof! The Mac image viewer on the left, and a SDL image viewer in Zig using `zpix` to view a JPEG file:
 ![demo](demo.png)
 
 ## Usage

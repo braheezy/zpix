@@ -4,14 +4,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const color = @import("color.zig");
-pub const Color = color.Color;
-pub const Gray = color.Gray;
-pub const RGB = color.RGB;
-pub const RGBA = color.RGBA;
-pub const YCbCr = color.YCbCr;
-pub const CMYK = color.CMYK;
-pub const Model = color.Model;
 pub const Point = @import("geometry.zig").Point;
 pub const Rectangle = @import("geometry.zig").Rectangle;
 

@@ -1,14 +1,15 @@
 .{
-    .name = .zjpeg,
+    .name = .zpix,
 
-    .version = "0.1.0",
-    .fingerprint = 0xbe761b5dceb0e495,
+    .version = "0.2.0",
+    .fingerprint = 0x9bd6de54c0db0d3a,
+    .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
         .SDL = .{
             .url = "git+https://github.com/allyourcodebase/SDL#181dd2c6a69a8392a8457a5e80e3ab2e4871e643",
             .hash = "SDL-2.32.4-JToi30-TEgH42-HFmgINmgFPrAXOjaNp734Jh_wep6ZN",
-            .lazy = false,
+            .lazy = true,
         },
     },
     .paths = .{

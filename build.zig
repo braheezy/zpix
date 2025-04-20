@@ -4,37 +4,88 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const jpeg_module = b.addModule("jpeg", .{
+    const jpeg_mod = b.addModule("jpeg", .{
         .root_source_file = b.path("src/jpeg/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const png_module = b.addModule("png", .{
+    const png_mod = b.addModule("png", .{
         .root_source_file = b.path("src/png/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const image_module = b.addModule("image", .{
-        .root_source_file = b.path("src/image/main.zig"),
+    const image_mod = b.addModule("image", .{
+        .root_source_file = b.path("src/image/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const color_mod = b.addModule("color", .{
+        .root_source_file = b.path("src/color/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const root_module = b.createModule(.{
-        .root_source_file = b.path("src/zjpeg.zig"),
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    image_mod.addImport("color", color_mod);
+    jpeg_mod.addImport("image", image_mod);
+    png_mod.addImport("image", image_mod);
+    png_mod.addImport("color", color_mod);
+    lib_mod.addImport("jpeg", jpeg_mod);
+    lib_mod.addImport("png", png_mod);
+    lib_mod.addImport("image", image_mod);
+    lib_mod.addImport("color", color_mod);
 
-    jpeg_module.addImport("image", image_module);
-    png_module.addImport("image", image_module);
-    root_module.addImport("jpeg", jpeg_module);
-    root_module.addImport("image", image_module);
-    root_module.addImport("png", png_module);
+    const lib = b.addStaticLibrary(.{
+        .name = "zpix",
+        .root_module = lib_mod,
+    });
 
+    const jpeg_tests = b.addTest(.{ .root_module = jpeg_mod });
+    const png_tests = b.addTest(.{ .root_module = png_mod });
+
+    const run_jpeg_tests = b.addRunArtifact(jpeg_tests);
+    const run_png_tests = b.addRunArtifact(png_tests);
+
+    const test_step_jpeg = b.step("test-jpeg", "Run unit tests");
+    test_step_jpeg.dependOn(&run_jpeg_tests.step);
+
+    const test_step_png = b.step("test-png", "Run unit tests");
+    test_step_png.dependOn(&run_png_tests.step);
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Copy documentation artifacts to prefix path");
+    docs_step.dependOn(&install_docs.step);
+
+    const serve_step = b.step("serve", "Serve documentation");
+    var a3: [3][]const u8 = .{ "zig", "run", "serveDocs.zig" };
+    const serve_run = b.addSystemCommand(&a3);
+    serve_step.dependOn(&serve_run.step);
+
+    const exe = try buildExample(b, optimize, target);
+    exe.root_module.addImport("zpix", lib_mod);
+}
+
+fn buildExample(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    target: std.Build.ResolvedTarget,
+) !*std.Build.Step.Compile {
     const exe = b.addExecutable(.{
-        .name = "zjpeg",
-        .root_module = root_module,
+        .name = "zpixview",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("example/zpixview.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Dependencies
@@ -52,39 +103,14 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-
     run_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the app");
+    const run_step = b.step("run", "Run the example");
     run_step.dependOn(&run_cmd.step);
 
-    const jpeg_tests = b.addTest(.{ .root_module = jpeg_module });
-    const png_tests = b.addTest(.{ .root_module = png_module });
-
-    const run_jpeg_tests = b.addRunArtifact(jpeg_tests);
-    const run_png_tests = b.addRunArtifact(png_tests);
-
-    const test_step_jpeg = b.step("test-jpeg", "Run unit tests");
-    test_step_jpeg.dependOn(&run_jpeg_tests.step);
-
-    const test_step_png = b.step("test-png", "Run unit tests");
-    test_step_png.dependOn(&run_png_tests.step);
-
-    const install_docs = b.addInstallDirectory(.{
-        .source_dir = exe.getEmittedDocs(),
-        .install_dir = .prefix,
-        .install_subdir = "docs",
-    });
-
-    const docs_step = b.step("docs", "Copy documentation artifacts to prefix path");
-    docs_step.dependOn(&install_docs.step);
-
-    const serve_step = b.step("serve", "Serve documentation");
-    var a3: [3][]const u8 = .{ "zig", "run", "serveDocs.zig" };
-    const serve_run = b.addSystemCommand(&a3);
-    serve_step.dependOn(&serve_run.step);
+    return exe;
 }

@@ -1,17 +1,17 @@
 const std = @import("std");
-pub const image = @import("image");
+const image = @import("zpix").image;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-pub const jpeg = @import("jpeg");
-const png = @import("png");
+const jpeg = @import("zpix").jpeg;
+const png = @import("zpix").png;
 
 const print = std.debug.print;
 
 const helpText =
-    \\Usage: zjpeg [options]] <jpeg file>
+    \\Usage: zpixview [options] <image file>
     \\Options:
     \\  -h, --help  Display this help message
 ;

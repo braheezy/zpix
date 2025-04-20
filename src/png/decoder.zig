@@ -1,8 +1,8 @@
 const std = @import("std");
 const image = @import("image");
-const mem = std.mem;
-const Color = image.Color;
-const Gray = image.Gray;
+const color = @import("color");
+const Color = color.Color;
+const Gray = color.Gray;
 
 const png_header = "\x89PNG\r\n\x1a\n";
 
@@ -131,7 +131,7 @@ color_depth: ColorBitDepth = undefined,
 interlace: Interlace = .none,
 crc: std.hash.Crc32,
 stage: Stage = .start,
-palette: []image.Color = undefined,
+palette: []color.Color = undefined,
 idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
