@@ -154,7 +154,7 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     // Check for valid image dimensions before returning
     const bounds = d.img.bounds();
     if (bounds.dX() == 0 or bounds.dY() == 0) {
-        std.debug.print("ERROR: Invalid final image dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
+        std.debug.print("[zpix] png: ERROR: Invalid final image dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
         return error.InvalidImageDimensions;
     }
 
@@ -203,7 +203,7 @@ fn parseChunk(self: *Decoder) !void {
             const stage_4 = colorDepthPaletted(self.color_depth);
 
             if (stage_1 or stage_2 or (stage_3 and stage_4)) {
-                std.debug.print("stage_1: {any} stage_2: {any} stage_3: {any} stage_4: {any}\n", .{
+                std.debug.print("[zpix] png: stage_1: {any} stage_2: {any} stage_3: {any} stage_4: {any}\n", .{
                     stage_1,
                     stage_2,
                     stage_3,
@@ -217,7 +217,7 @@ fn parseChunk(self: *Decoder) !void {
                 self.stage = .seen_idat;
             }
 
-            std.debug.print("idat: length - {d}\n", .{chunk_header.length});
+            std.debug.print("[zpix] png: idat: length - {d}\n", .{chunk_header.length});
             // Process all consecutive IDAT chunks
             return try self.parseIdat(chunk_header.length);
         },
@@ -232,9 +232,9 @@ fn parseChunk(self: *Decoder) !void {
         },
         else => {
             if (chunk_header.chunk_type == .unknown) {
-                std.debug.print("skipping unknown chunk: '{s}' (length: {d})\n", .{ chunk_header.type_bytes, chunk_header.length });
+                std.debug.print("[zpix] png: skipping unknown chunk: '{s}' (length: {d})\n", .{ chunk_header.type_bytes, chunk_header.length });
             } else {
-                std.debug.print("skipping chunk: {s} (length: {d})\n", .{ @tagName(chunk_header.chunk_type), chunk_header.length });
+                std.debug.print("[zpix] png: skipping chunk: {s} (length: {d})\n", .{ @tagName(chunk_header.chunk_type), chunk_header.length });
             }
             // Skip chunk data
             try self.skipChunk(chunk_header.length);
@@ -315,7 +315,7 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
         else => return error.UnsupportedBitDepth,
     };
 
-    std.debug.print("ihdr: {d}x{d} {s} {s}\n", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
+    std.debug.print("[zpix] png: ihdr: {d}x{d} {s} {s}\n", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
     return try self.verifyChecksum();
 }
 
@@ -352,7 +352,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
         // Try to read the next chunk header
         var header_buf: [8]u8 = undefined;
         self.r.readNoEof(&header_buf) catch |err| {
-            std.debug.print("Error reading next chunk header: {any}\n", .{err});
+            std.debug.print("[zpix] png: Error reading next chunk header: {any}\n", .{err});
             break;
         };
 
@@ -389,7 +389,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
                     try self.verifyChecksum();
                 },
                 else => {
-                    std.debug.print("Found non-IDAT/IEND chunk: {s}\n", .{next_header.type_bytes});
+                    std.debug.print("[zpix] png: Found non-IDAT/IEND chunk: {s}\n", .{next_header.type_bytes});
                     // Skip this chunk for now and let the next parseChunk call handle it
                     try self.skipChunk(next_header.length);
                     try self.verifyChecksum();
@@ -894,7 +894,7 @@ pub fn verifyChecksum(self: *Decoder) !void {
     const bytes_read = try self.r.readAll(&crc_bytes);
 
     if (bytes_read != 4) {
-        std.debug.print("WARNING: Could only read {d} bytes for CRC\n", .{bytes_read});
+        std.debug.print("[zpix] png: WARNING: Could only read {d} bytes for CRC\n", .{bytes_read});
         return error.IncompleteCrc;
     }
 
@@ -903,13 +903,13 @@ pub fn verifyChecksum(self: *Decoder) !void {
     const actual_crc = self.crc.final();
 
     if (expected_crc != actual_crc) {
-        std.debug.print("CRC MISMATCH!\n", .{});
+        std.debug.print("[zpix] png: CRC MISMATCH!\n", .{});
         return error.InvalidChecksum;
     }
 }
 
 fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
-    std.debug.print("p1: {d}, p8: {d}, color_depth: {d}\n", .{
+    std.debug.print("[zpix] png: p1: {d}, p8: {d}, color_depth: {d}\n", .{
         @intFromEnum(ColorBitDepth.p1),
         @intFromEnum(ColorBitDepth.p8),
         @intFromEnum(color_depth),
