@@ -132,7 +132,7 @@ color_depth: ColorBitDepth = undefined,
 interlace: Interlace = .none,
 crc: std.hash.Crc32,
 stage: Stage = .start,
-palette: Palette = undefined,
+palette: ?Palette = null,
 idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
@@ -143,7 +143,7 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
         .crc = std.hash.Crc32.init(),
     };
 
-    defer allocator.free(d.palette);
+    defer if (d.palette) |p| allocator.free(p);
 
     try d.checkHeader();
 
@@ -154,7 +154,7 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     // Check for valid image dimensions before returning
     const bounds = d.img.bounds();
     if (bounds.dX() == 0 or bounds.dY() == 0) {
-        std.debug.print("[zpix] png: ERROR: Invalid final image dimensions: {d}x{d}\n", .{ bounds.dX(), bounds.dY() });
+        std.log.info("[zpix] png: ERROR: Invalid final image dimensions: {d}x{d}", .{ bounds.dX(), bounds.dY() });
         return error.InvalidImageDimensions;
     }
 
@@ -203,7 +203,7 @@ fn parseChunk(self: *Decoder) !void {
             const stage_4 = colorDepthPaletted(self.color_depth);
 
             if (stage_1 or stage_2 or (stage_3 and stage_4)) {
-                std.debug.print("[zpix] png: stage_1: {any} stage_2: {any} stage_3: {any} stage_4: {any}\n", .{
+                std.log.info("[zpix] png: stage_1: {any} stage_2: {any} stage_3: {any} stage_4: {any}", .{
                     stage_1,
                     stage_2,
                     stage_3,
@@ -217,7 +217,7 @@ fn parseChunk(self: *Decoder) !void {
                 self.stage = .seen_idat;
             }
 
-            std.debug.print("[zpix] png: idat: length - {d}\n", .{chunk_header.length});
+            std.log.info("[zpix] png: idat: length - {d}", .{chunk_header.length});
             // Process all consecutive IDAT chunks
             return try self.parseIdat(chunk_header.length);
         },
@@ -232,9 +232,9 @@ fn parseChunk(self: *Decoder) !void {
         },
         else => {
             if (chunk_header.chunk_type == .unknown) {
-                std.debug.print("[zpix] png: skipping unknown chunk: '{s}' (length: {d})\n", .{ chunk_header.type_bytes, chunk_header.length });
+                std.log.info("[zpix] png: skipping unknown chunk: '{s}' (length: {d})", .{ chunk_header.type_bytes, chunk_header.length });
             } else {
-                std.debug.print("[zpix] png: skipping chunk: {s} (length: {d})\n", .{ @tagName(chunk_header.chunk_type), chunk_header.length });
+                std.log.info("[zpix] png: skipping chunk: {s} (length: {d})", .{ @tagName(chunk_header.chunk_type), chunk_header.length });
             }
             // Skip chunk data
             try self.skipChunk(chunk_header.length);
@@ -315,7 +315,7 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
         else => return error.UnsupportedBitDepth,
     };
 
-    std.debug.print("[zpix] png: ihdr: {d}x{d} {s} {s}\n", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
+    std.log.info("[zpix] png: ihdr: {d}x{d} {s} {s}", .{ self.width, self.height, @tagName(self.color_type), @tagName(self.color_depth) });
     return try self.verifyChecksum();
 }
 
@@ -352,7 +352,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
         // Try to read the next chunk header
         var header_buf: [8]u8 = undefined;
         self.r.readNoEof(&header_buf) catch |err| {
-            std.debug.print("[zpix] png: Error reading next chunk header: {any}\n", .{err});
+            std.log.info("[zpix] png: Error reading next chunk header: {any}", .{err});
             break;
         };
 
@@ -389,7 +389,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
                     try self.verifyChecksum();
                 },
                 else => {
-                    std.debug.print("[zpix] png: Found non-IDAT/IEND chunk: {s}\n", .{next_header.type_bytes});
+                    std.log.info("[zpix] png: Found non-IDAT/IEND chunk: {s}", .{next_header.type_bytes});
                     // Skip this chunk for now and let the next parseChunk call handle it
                     try self.skipChunk(next_header.length);
                     try self.verifyChecksum();
@@ -465,7 +465,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
 
 fn parsePlte(self: *Decoder, length: u32) !void {
     const num_palettes = length / 3;
-    if (length % 3 != 0 or num_palettes <= 0 or num_palettes > 256 or num_palettes > @as(u8, 1) << @as(u3, @truncate(self.depth))) {
+    if (length % 3 != 0 or num_palettes <= 0 or num_palettes > 256 or num_palettes > @as(u32, 1) << @as(u5, @intCast(self.depth))) {
         return error.BadPlteLength;
     }
 
@@ -476,7 +476,7 @@ fn parsePlte(self: *Decoder, length: u32) !void {
         .p1, .p2, .p4, .p8 => {
             self.palette = try self.allocator.alloc(color.Color, num_palettes);
             for (0..num_palettes) |i| {
-                self.palette[i] = .{ .rgba = .{
+                self.palette.?[i] = .{ .rgba = .{
                     .r = self.scratch[i * 3 + 0],
                     .g = self.scratch[i * 3 + 1],
                     .b = self.scratch[i * 3 + 2],
@@ -549,6 +549,7 @@ fn readImagePass(
     var img: image.Image = undefined;
     var rgba: image.RGBAImage = undefined;
     var rgba64: image.RGBA64Image = undefined;
+    var nrgba: image.NRGBAImage = undefined;
     var gray: image.GrayImage = undefined;
     var gray16: image.Gray16Image = undefined;
     var paletted: image.PalettedImage = undefined;
@@ -575,6 +576,10 @@ fn readImagePass(
             gray = try image.GrayImage.init(self.allocator, rect);
             img = .{ .Gray = gray };
         },
+        .ga8 => {
+            nrgba = try image.NRGBAImage.init(self.allocator, rect);
+            img = .{ .NRGBA = nrgba };
+        },
         .g16 => {
             gray16 = try image.Gray16Image.init(self.allocator, rect);
             img = .{ .Gray16 = gray16 };
@@ -590,12 +595,12 @@ fn readImagePass(
         },
         .p1, .p2, .p4, .p8 => {
             // TODO: Implement
-            paletted = try image.PalettedImage.init(self.allocator, rect, self.palette);
+            paletted = try image.PalettedImage.init(self.allocator, rect, self.palette.?);
             img = .{ .Paletted = paletted };
         },
         // Add cases for other color types as you implement them
         else => {
-            std.log.err("Unimplemented color type 1: {s}\n", .{@tagName(self.color_depth)});
+            std.log.err("Unimplemented color type 1: {s}", .{@tagName(self.color_depth)});
             return error.Unimplemented;
         },
     }
@@ -745,6 +750,16 @@ fn readImagePass(
                     gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_column });
                 }
             },
+            .ga8 => {
+                for (0..width) |x| {
+                    const y_col = cdat[2 * x + 0];
+                    nrgba.setNRGBA(
+                        @intCast(x),
+                        @intCast(y),
+                        .{ .r = y_col, .g = y_col, .b = y_col, .a = cdat[2 * x + 1] },
+                    );
+                }
+            },
             .p1 => {
                 for (0..width) |x| {
                     var bit_index = cdat[x / 8];
@@ -759,9 +774,50 @@ fn readImagePass(
                     }
                 }
             },
+            .p2 => {
+                var x: usize = 0;
+                while (x < width) : (x += 4) {
+                    var bit_index = cdat[x / 4];
+                    var x2: usize = 0;
+                    while (x2 < 4 and x + x2 < width) : (x2 += 1) {
+                        const index = bit_index >> 6;
+                        if (paletted.palette.len <= index) {
+                            paletted.palette = paletted.palette[0 .. index + 1];
+                        }
+                        paletted.setColorIndex(@intCast(x + x2), @intCast(y), @intCast(index));
+                        bit_index <<= 2;
+                    }
+                }
+            },
+            .p4 => {
+                var x: usize = 0;
+                while (x < width) : (x += 2) {
+                    var bit_index = cdat[x / 2];
+                    var x2: usize = 0;
+                    while (x2 < 2 and x + x2 < width) : (x2 += 1) {
+                        const index = bit_index >> 4;
+                        if (paletted.palette.len <= index) {
+                            paletted.palette = paletted.palette[0 .. index + 1];
+                        }
+                        paletted.setColorIndex(@intCast(x + x2), @intCast(y), @intCast(index));
+                        bit_index <<= 4;
+                    }
+                }
+            },
+            .p8 => {
+                if (paletted.palette.len != 256) {
+                    for (0..width) |x| {
+                        if (paletted.palette.len <= cdat[x]) {
+                            paletted.palette = paletted.palette[0 .. cdat[x] + 1];
+                        }
+                    }
+                }
+                @memcpy(paletted.pixels[pixel_offset..][0..cdat.len], cdat);
+                pixel_offset += paletted.stride;
+            },
             // Add cases for other color types as you implement them
             else => {
-                std.log.err("Unimplemented color type 2: {s}\n", .{@tagName(self.color_depth)});
+                std.log.err("Unimplemented color type 2: {s}", .{@tagName(self.color_depth)});
                 return error.Unimplemented;
             },
         }
@@ -894,7 +950,7 @@ pub fn verifyChecksum(self: *Decoder) !void {
     const bytes_read = try self.r.readAll(&crc_bytes);
 
     if (bytes_read != 4) {
-        std.debug.print("[zpix] png: WARNING: Could only read {d} bytes for CRC\n", .{bytes_read});
+        std.log.info("[zpix] png: WARNING: Could only read {d} bytes for CRC", .{bytes_read});
         return error.IncompleteCrc;
     }
 
@@ -903,13 +959,13 @@ pub fn verifyChecksum(self: *Decoder) !void {
     const actual_crc = self.crc.final();
 
     if (expected_crc != actual_crc) {
-        std.debug.print("[zpix] png: CRC MISMATCH!\n", .{});
+        std.log.info("[zpix] png: CRC MISMATCH!", .{});
         return error.InvalidChecksum;
     }
 }
 
 fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
-    std.debug.print("[zpix] png: p1: {d}, p8: {d}, color_depth: {d}\n", .{
+    std.log.info("[zpix] png: p1: {d}, p8: {d}, color_depth: {d}", .{
         @intFromEnum(ColorBitDepth.p1),
         @intFromEnum(ColorBitDepth.p8),
         @intFromEnum(color_depth),
