@@ -8,6 +8,7 @@ const Model = color.Model;
 const Gray = color.Gray;
 const Gray16 = color.Gray16;
 const RGBA64 = color.RGBA64;
+const NRGBA = color.NRGBA;
 
 /// Config holds an image's color model and dimensions.
 pub const Config = struct {
@@ -24,8 +25,10 @@ pub const Image = union(enum) {
     YCbCr: YCbCrImage,
     RGBA: RGBAImage,
     RGBA64: RGBA64Image,
+    NRGBA: NRGBAImage,
     CMYK: CMYKImage,
     Paletted: PalettedImage,
+
     // bounds returns the domain for which At can return non-zero color.
     // The bounds do not necessarily contain the point (0, 0).
     pub fn bounds(self: Image) Rectangle {
@@ -35,6 +38,7 @@ pub const Image = union(enum) {
             .YCbCr => |img| img.bounds(),
             .RGBA => |img| img.bounds(),
             .RGBA64 => |img| img.bounds(),
+            .NRGBA => |img| img.bounds(),
             .CMYK => |img| img.bounds(),
             .Paletted => |img| img.bounds(),
         };
@@ -50,6 +54,7 @@ pub const Image = union(enum) {
             .YCbCr => |img| img.at(x, y),
             .RGBA => |img| img.at(x, y),
             .RGBA64 => |img| img.at(x, y),
+            .NRGBA => |img| img.at(x, y),
             .CMYK => |img| img.at(x, y),
             .Paletted => |img| img.at(x, y),
         };
@@ -70,6 +75,9 @@ pub const Image = union(enum) {
                 al.free(img.pixels);
             },
             .RGBA64 => |img| {
+                al.free(img.pixels);
+            },
+            .NRGBA => |img| {
                 al.free(img.pixels);
             },
             .CMYK => |img| {
@@ -254,6 +262,82 @@ pub const RGBA64Image = struct {
         s[5] = @intCast(c.b & 0xff);
         s[6] = @intCast(c.a >> 8);
         s[7] = @intCast(c.a & 0xff);
+    }
+};
+
+pub const NRGBAImage = struct {
+    pixels: []u8 = undefined,
+    stride: usize = 0,
+    rect: Rectangle = undefined,
+
+    pub fn init(
+        al: std.mem.Allocator,
+        rect: Rectangle,
+    ) !NRGBAImage {
+        const pixel_len = pixelBufferLength(4, rect, "NRGBA");
+        const pixels = try al.alloc(u8, pixel_len);
+        return NRGBAImage{
+            .pixels = pixels,
+            .stride = @intCast(rect.dX() * 4),
+            .rect = rect,
+        };
+    }
+
+    pub fn subImage(self: *NRGBAImage, rect: Rectangle) !?NRGBAImage {
+        if (rect.Intersect(self.rect)) |r| {
+            const i: usize = @intCast(self.pixOffset(r.min.x, r.min.y));
+            const sub_img = NRGBAImage{
+                .pixels = self.pixels[i..],
+                .stride = self.stride,
+                .rect = r,
+            };
+            return sub_img;
+        } else {
+            return null;
+        }
+    }
+
+    // pixOffset returns the index of the first element of Pix that corresponds to
+    // the pixel at (x, y).
+    pub fn pixOffset(self: NRGBAImage, x: i32, y: i32) i32 {
+        const i: i32 = @intCast(self.stride);
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
+    }
+
+    pub fn bounds(self: NRGBAImage) Rectangle {
+        return self.rect;
+    }
+
+    pub fn at(self: NRGBAImage, x: i32, y: i32) Color {
+        return Color{ .nrgba = self.nrgbaAt(x, y) };
+    }
+
+    pub fn nrgbaAt(self: NRGBAImage, x: i32, y: i32) NRGBA {
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return NRGBA{};
+        }
+        const i: usize = @intCast(self.pixOffset(x, y));
+        const s = self.pixels[i .. i + 4];
+        return NRGBA{
+            .r = s[0],
+            .g = s[1],
+            .b = s[2],
+            .a = s[3],
+        };
+    }
+
+    pub fn setNRGBA(self: NRGBAImage, x: i32, y: i32, c: NRGBA) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index: usize = @intCast(self.pixOffset(x, y));
+        var s = self.pixels[pixel_index .. pixel_index + 4];
+        s[0] = c.r;
+        s[1] = c.g;
+        s[2] = c.b;
+        s[3] = c.a;
     }
 };
 
