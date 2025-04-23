@@ -6,6 +6,7 @@ pub const Gray16 = color.Gray16;
 pub const RGB = color.RGB;
 pub const RGBA = color.RGBA;
 pub const NRGBA = color.NRGBA;
+pub const NRGBA64 = color.NRGBA64;
 pub const RGBA64 = color.RGBA64;
 pub const YCbCr = color.YCbCr;
 pub const CMYK = color.CMYK;

@@ -3,6 +3,7 @@ pub const Gray16 = struct { y: u16 = 0 };
 pub const RGB = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0 };
 pub const RGBA = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
 pub const NRGBA = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
+pub const NRGBA64 = struct { r: u16 = 0, g: u16 = 0, b: u16 = 0, a: u16 = 0 };
 pub const RGBA64 = struct { r: u16 = 0, g: u16 = 0, b: u16 = 0, a: u16 = 0 };
 pub const YCbCr = struct { y: u8 = 0, cb: u8 = 0, cr: u8 = 0 };
 const CMYK = struct { c: u8 = 0, m: u8 = 0, y: u8 = 0, k: u8 = 0 };
@@ -13,6 +14,7 @@ pub const Color = union(enum) {
     rgb: RGB,
     rgba: RGBA,
     nrgba: NRGBA,
+    nrgba64: NRGBA64,
     rgba64: RGBA64,
     ycbcr: YCbCr,
     cmyk: CMYK,
@@ -65,6 +67,23 @@ pub const Color = union(enum) {
 
                 var a: u32 = @intCast(c.a);
                 a |= a << 8;
+
+                return .{ r, g, b, a };
+            },
+            .nrgba64 => |c| {
+                var r: u32 = @intCast(c.r);
+                r *= @intCast(c.a);
+                r /= 0xffff;
+
+                var g: u32 = @intCast(c.g);
+                g *= @intCast(c.a);
+                g /= 0xffff;
+
+                var b: u32 = @intCast(c.b);
+                b *= @intCast(c.a);
+                b /= 0xffff;
+
+                const a: u32 = @intCast(c.a);
 
                 return .{ r, g, b, a };
             },
