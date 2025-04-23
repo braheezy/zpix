@@ -137,13 +137,15 @@ idat_length: u32 = 0,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
 pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+    // We may do some allocations for some images that are easier to clean up if an arena is used.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     var d = Decoder{
-        .allocator = allocator,
+        .allocator = arena.allocator(),
         .r = r,
         .crc = std.hash.Crc32.init(),
     };
-
-    defer if (d.palette) |p| allocator.free(p);
 
     try d.checkHeader();
 
@@ -156,6 +158,59 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     if (bounds.dX() == 0 or bounds.dY() == 0) {
         std.log.info("[zpix] png: ERROR: Invalid final image dimensions: {d}x{d}", .{ bounds.dX(), bounds.dY() });
         return error.InvalidImageDimensions;
+    }
+
+    // Copy the image data so the caller owns it.
+    switch (d.img) {
+        .Gray => |gray| {
+            const gray_img = try image.GrayImage.init(allocator, bounds);
+            @memcpy(gray_img.pixels, gray.pixels);
+            d.img = .{ .Gray = gray_img };
+        },
+        .Gray16 => |gray16| {
+            const gray16_img = try image.Gray16Image.init(allocator, bounds);
+            @memcpy(gray16_img.pixels, gray16.pixels);
+            d.img = .{ .Gray16 = gray16_img };
+        },
+        .YCbCr => |ycbcr| {
+            const ycbcr_img = try image.YCbCrImage.init(
+                allocator,
+                bounds,
+                ycbcr.subsample_ratio,
+            );
+            @memcpy(ycbcr_img.pixels, ycbcr.pixels);
+            d.img = .{ .YCbCr = ycbcr_img };
+        },
+        .RGBA => |rgba| {
+            const rgba_img = try image.RGBAImage.init(allocator, bounds);
+            @memcpy(rgba_img.pixels, rgba.pixels);
+            d.img = .{ .RGBA = rgba_img };
+        },
+        .RGBA64 => |rgba64| {
+            const rgba64_img = try image.RGBA64Image.init(allocator, bounds);
+            @memcpy(rgba64_img.pixels, rgba64.pixels);
+            d.img = .{ .RGBA64 = rgba64_img };
+        },
+        .NRGBA => |nrgba| {
+            const nrgba_img = try image.NRGBAImage.init(allocator, bounds);
+            @memcpy(nrgba_img.pixels, nrgba.pixels);
+            d.img = .{ .NRGBA = nrgba_img };
+        },
+        .NRGBA64 => |nrgba64| {
+            const nrgba64_img = try image.NRGBA64Image.init(allocator, bounds);
+            @memcpy(nrgba64_img.pixels, nrgba64.pixels);
+            d.img = .{ .NRGBA64 = nrgba64_img };
+        },
+        .CMYK => |cmyk| {
+            const cmyk_img = try image.CMYKImage.init(allocator, bounds);
+            @memcpy(cmyk_img.pixels, cmyk.pixels);
+            d.img = .{ .CMYK = cmyk_img };
+        },
+        .Paletted => |paletted| {
+            const paletted_img = try image.PalettedImage.init(allocator, bounds, paletted.palette);
+            @memcpy(paletted_img.pixels, paletted.pixels);
+            d.img = .{ .Paletted = paletted_img };
+        },
     }
 
     return d.img;
@@ -553,6 +608,7 @@ fn readImagePass(
     var gray: image.GrayImage = undefined;
     var gray16: image.Gray16Image = undefined;
     var paletted: image.PalettedImage = undefined;
+    var nrgba64: image.NRGBA64Image = undefined;
 
     // Calculate bits per pixel based on color depth
     const bits_per_pixel: u8 = switch (self.color_depth) {
@@ -580,12 +636,15 @@ fn readImagePass(
             nrgba = try image.NRGBAImage.init(self.allocator, rect);
             img = .{ .NRGBA = nrgba };
         },
+        .ga16 => {
+            nrgba64 = try image.NRGBA64Image.init(self.allocator, rect);
+            img = .{ .NRGBA64 = nrgba64 };
+        },
         .g16 => {
             gray16 = try image.Gray16Image.init(self.allocator, rect);
             img = .{ .Gray16 = gray16 };
         },
         .tc8 => {
-            // rgba = try self.allocator.create(image.RGBAImage);
             rgba = try image.RGBAImage.init(self.allocator, rect);
             img = .{ .RGBA = rgba };
         },
@@ -593,8 +652,15 @@ fn readImagePass(
             rgba64 = try image.RGBA64Image.init(self.allocator, rect);
             img = .{ .RGBA64 = rgba64 };
         },
+        .tca8 => {
+            nrgba = try image.NRGBAImage.init(self.allocator, rect);
+            img = .{ .NRGBA = nrgba };
+        },
+        .tca16 => {
+            nrgba64 = try image.NRGBA64Image.init(self.allocator, rect);
+            img = .{ .NRGBA64 = nrgba64 };
+        },
         .p1, .p2, .p4, .p8 => {
-            // TODO: Implement
             paletted = try image.PalettedImage.init(self.allocator, rect, self.palette.?);
             img = .{ .Paletted = paletted };
         },
@@ -757,6 +823,34 @@ fn readImagePass(
                         @intCast(x),
                         @intCast(y),
                         .{ .r = y_col, .g = y_col, .b = y_col, .a = cdat[2 * x + 1] },
+                    );
+                }
+            },
+            .ga16 => {
+                for (0..width) |x| {
+                    const y_col = @as(u16, @intCast(cdat[4 * x + 0])) << 8 | @as(u16, @intCast(cdat[4 * x + 1]));
+                    const a_col = @as(u16, @intCast(cdat[4 * x + 2])) << 8 | @as(u16, @intCast(cdat[4 * x + 3]));
+                    nrgba64.setNRGBA64(
+                        @intCast(x),
+                        @intCast(y),
+                        .{ .r = y_col, .g = y_col, .b = y_col, .a = a_col },
+                    );
+                }
+            },
+            .tca8 => {
+                @memcpy(nrgba.pixels[pixel_offset..][0..cdat.len], cdat);
+                pixel_offset += nrgba.stride;
+            },
+            .tca16 => {
+                for (0..width) |x| {
+                    const r_col = @as(u16, @intCast(cdat[8 * x + 0])) << 8 | @as(u16, @intCast(cdat[8 * x + 1]));
+                    const g_col = @as(u16, @intCast(cdat[8 * x + 2])) << 8 | @as(u16, @intCast(cdat[8 * x + 3]));
+                    const b_col = @as(u16, @intCast(cdat[8 * x + 4])) << 8 | @as(u16, @intCast(cdat[8 * x + 5]));
+                    const a_col = @as(u16, @intCast(cdat[8 * x + 6])) << 8 | @as(u16, @intCast(cdat[8 * x + 7]));
+                    nrgba64.setNRGBA64(
+                        @intCast(x),
+                        @intCast(y),
+                        .{ .r = r_col, .g = g_col, .b = b_col, .a = a_col },
                     );
                 }
             },
