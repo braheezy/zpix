@@ -55,6 +55,7 @@ pub fn main() !void {
             defer {
                 img.free(allocator);
             }
+
             try draw(allocator, arg, img);
         }
     }

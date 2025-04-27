@@ -686,6 +686,8 @@ fn readImagePass(
     defer self.allocator.free(cr);
     var pr = try self.allocator.alloc(u8, row_size);
     defer self.allocator.free(pr);
+    @memset(pr, 0);
+    @memset(cr, 0);
 
     // Read the image data row by row
     var pixel_offset: usize = 0;
@@ -777,7 +779,7 @@ fn readImagePass(
                     var x2: usize = 0;
                     while (x2 < 8 and x + x2 < width) : (x2 += 1) {
                         const bit_value = (bit_index >> 7) * 0xff;
-                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
+                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = (bit_value >> 7) * 0xff });
                         bit_index <<= 1;
                     }
                 }

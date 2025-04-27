@@ -127,6 +127,49 @@ pub const Image = union(enum) {
 
         return rgba_pixels;
     }
+
+    // Clear fills the entire image with the specified color
+    pub fn clear(self: *Image, c: Color) void {
+        switch (self.*) {
+            .RGBA => |*rgba| {
+                const rgba_color = c.toRGBA();
+
+                // Pre-calculate 8-bit color components
+                const r: u8 = @intCast(rgba_color[0] >> 8);
+                const g: u8 = @intCast(rgba_color[1] >> 8);
+                const b: u8 = @intCast(rgba_color[2] >> 8);
+                const a: u8 = @intCast(rgba_color[3] >> 8);
+
+                // Fill all pixels with the color
+                var i: usize = 0;
+                while (i < rgba.pixels.len) : (i += 4) {
+                    rgba.pixels[i + 0] = r;
+                    rgba.pixels[i + 1] = g;
+                    rgba.pixels[i + 2] = b;
+                    rgba.pixels[i + 3] = a;
+                }
+            },
+            // Add other image type cases as needed
+            else => {
+                // Fallback implementation using pixel-by-pixel setting
+                const img_bounds = self.bounds();
+                var y = img_bounds.min.y;
+                while (y < img_bounds.max.y) : (y += 1) {
+                    var x = img_bounds.min.x;
+                    while (x < img_bounds.max.x) : (x += 1) {
+                        switch (self.*) {
+                            .Gray => |*img| img.setGray(x, y, c.gray),
+                            .Gray16 => |*img| img.setGray16(x, y, c.gray16),
+                            .NRGBA => |*img| img.setNRGBA(x, y, c.nrgba),
+                            .NRGBA64 => |*img| img.setNRGBA64(x, y, c.nrgba64),
+                            .RGBA64 => |*img| img.setRGBA64(x, y, c.rgba64),
+                            else => {},
+                        }
+                    }
+                }
+            },
+        }
+    }
 };
 
 pub const RGBAImage = struct {
@@ -189,6 +232,19 @@ pub const RGBAImage = struct {
             s[2],
             s[3],
         );
+    }
+
+    pub fn setRGBA(self: RGBAImage, x: i32, y: i32, c: Color) void {
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(self.rect)) {
+            return;
+        }
+        const pixel_index: usize = @intCast(self.pixOffset(x, y));
+        const s = self.pixels[pixel_index..];
+        s[0] = c.rgba.r;
+        s[1] = c.rgba.g;
+        s[2] = c.rgba.b;
+        s[3] = c.rgba.a;
     }
 };
 
