@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = std.builtin;
 const image = @import("zpix").image;
 const jpeg = @import("zpix").jpeg;
 const png = @import("zpix").png;
@@ -16,13 +17,15 @@ const helpText =
 ;
 
 pub fn main() !void {
-    // Memory allocation setup
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer if (gpa.deinit() == .leak) {
-        std.process.exit(1);
-    };
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
+    // Memory allocation setup
+    const allocator = debug_allocator.allocator();
+    defer {
+        if (debug_allocator.deinit() == .leak) {
+            std.process.exit(1);
+        }
+    }
     const stdout = std.io.getStdOut().writer();
 
     // Read arguments
