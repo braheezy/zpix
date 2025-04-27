@@ -73,6 +73,17 @@ pub fn build(b: *std.Build) !void {
 
     const exe = try buildExample(b, optimize, target);
     exe.root_module.addImport("zpix", lib_mod);
+
+    const sng_exe = b.addExecutable(.{
+        .name = "sng",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("example/sng.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sng_exe.root_module.addImport("zpix", lib_mod);
+    b.installArtifact(sng_exe);
 }
 
 fn buildExample(
