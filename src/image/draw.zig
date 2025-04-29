@@ -1,41 +1,16 @@
 // draw.zig
 const std = @import("std");
 const image = @import("image.zig");
-const color = @import("color.zig");
+const color = @import("color");
 const geom = @import("geometry.zig");
 const Point = geom.Point;
 const Rectangle = geom.Rectangle;
 
-pub const DrawOp = enum {
-    Source, // Simply copy source over destination
-    Over, // Alpha compositing
-};
-
-/// Draws src image onto dst image with the specified drawing operation
-// pub fn Draw(
-//     dst: *image.Image,
-//     dst_rect: Rectangle,
-//     src: image.Image,
-//     src_point: Point,
-//     op: DrawOp,
-// ) void {
-//     // Implementation will handle different image type combinations
-//     switch (dst.*) {
-//         .RGBA => |*rgba_dst| {
-//             drawToRGBA(rgba_dst, dst_rect, src, src_point, op);
-//         },
-//         // Add other cases for different image types
-//         else => {
-//             // Convert to RGBA and draw
-//         },
-//     }
-// }
-
 /// Basic primitive drawing functions
 pub const Drawer = struct {
-    img: *image.Image,
+    img: *image.RGBAImage,
 
-    pub fn init(img: *image.Image) Drawer {
+    pub fn init(img: *image.RGBAImage) Drawer {
         return .{
             .img = img,
         };
@@ -43,56 +18,36 @@ pub const Drawer = struct {
 
     /// Fill the entire image with the specified color
     pub fn clear(self: *Drawer, c: color.Color) void {
-        switch (self.img.*) {
-            .RGBA => |*rgba| {
-                const rgba_color = c.toRGBA();
+        const rgba = self.img;
+        const rgba_color = c.toRGBA();
 
-                // Pre-calculate 8-bit color components
-                const r: u8 = @intCast(rgba_color[0] >> 8);
-                const g: u8 = @intCast(rgba_color[1] >> 8);
-                const b: u8 = @intCast(rgba_color[2] >> 8);
-                const a: u8 = @intCast(rgba_color[3] >> 8);
+        // Pre-calculate 8-bit color components
+        const r: u8 = @intCast(rgba_color[0] >> 8);
+        const g: u8 = @intCast(rgba_color[1] >> 8);
+        const b: u8 = @intCast(rgba_color[2] >> 8);
+        const a: u8 = @intCast(rgba_color[3] >> 8);
 
-                // Fill all pixels with the color
-                var i: usize = 0;
-                while (i < rgba.pixels.len) : (i += 4) {
-                    rgba.pixels[i + 0] = r;
-                    rgba.pixels[i + 1] = g;
-                    rgba.pixels[i + 2] = b;
-                    rgba.pixels[i + 3] = a;
-                }
-            },
-            // Add other image type cases as needed
-            else => {
-                // Fallback implementation using setPixel for other image types
-                const bounds = self.img.bounds();
-                var y = bounds.min.y;
-                while (y < bounds.max.y) : (y += 1) {
-                    var x = bounds.min.x;
-                    while (x < bounds.max.x) : (x += 1) {
-                        self.setPixel(x, y, c);
-                    }
-                }
-            },
+        // Fill all pixels with the color
+        var i: usize = 0;
+        while (i < rgba.pixels.len) : (i += 4) {
+            rgba.pixels[i + 0] = r;
+            rgba.pixels[i + 1] = g;
+            rgba.pixels[i + 2] = b;
+            rgba.pixels[i + 3] = a;
         }
     }
 
     /// Set a single pixel
     pub fn setPixel(self: *Drawer, x: i32, y: i32, c: color.Color) void {
-        switch (self.img.*) {
-            .RGBA => |*rgba| {
-                const point = Point{ .x = x, .y = y };
-                if (!point.In(rgba.bounds())) return;
-                const i = rgba.pixOffset(x, y);
-                const rgba_color = c.toRGBA();
-                rgba.pixels[@intCast(i + 0)] = @intCast(rgba_color[0] >> 8);
-                rgba.pixels[@intCast(i + 1)] = @intCast(rgba_color[1] >> 8);
-                rgba.pixels[@intCast(i + 2)] = @intCast(rgba_color[2] >> 8);
-                rgba.pixels[@intCast(i + 3)] = @intCast(rgba_color[3] >> 8);
-            },
-            // Add other image type cases
-            else => {},
-        }
+        const rgba = self.img;
+        const point = Point{ .x = x, .y = y };
+        if (!point.In(rgba.bounds())) return;
+        const i = rgba.pixOffset(x, y);
+        const rgba_color = c.toRGBA();
+        rgba.pixels[@intCast(i + 0)] = @intCast(rgba_color[0] >> 8);
+        rgba.pixels[@intCast(i + 1)] = @intCast(rgba_color[1] >> 8);
+        rgba.pixels[@intCast(i + 2)] = @intCast(rgba_color[2] >> 8);
+        rgba.pixels[@intCast(i + 3)] = @intCast(rgba_color[3] >> 8);
     }
 
     /// Draw a line using Bresenham's algorithm
@@ -101,10 +56,10 @@ pub const Drawer = struct {
         const dy = -@abs(y1 - y0);
         const sx: i32 = if (x0 < x1) 1 else -1;
         const sy: i32 = if (y0 < y1) 1 else -1;
-        const err = dx + dy;
+        var err = dx + dy;
 
-        const x = x0;
-        const y = y0;
+        var x = x0;
+        var y = y0;
 
         while (true) {
             self.setPixel(x, y, c);

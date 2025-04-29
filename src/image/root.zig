@@ -21,4 +21,6 @@ pub const CMYKImage = image.CMYKImage;
 pub const PalettedImage = image.PalettedImage;
 pub const YCbCrSubsample = image.YCbCrSubsample;
 
+pub const Drawer = @import("draw.zig").Drawer;
+
 pub const util = @import("util.zig");

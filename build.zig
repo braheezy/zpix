@@ -4,42 +4,51 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const jpeg_mod = b.addModule("jpeg", .{
-        .root_source_file = b.path("src/jpeg/root.zig"),
+    // Create the main zpix module
+    const zpix_mod = b.addModule("zpix", .{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const png_mod = b.addModule("png", .{
-        .root_source_file = b.path("src/png/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const image_mod = b.addModule("image", .{
-        .root_source_file = b.path("src/image/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+
+    // Create submodules that can be imported directly
     const color_mod = b.addModule("color", .{
         .root_source_file = b.path("src/color/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const lib_mod = b.addModule("zpix", .{
-        .root_source_file = b.path("src/root.zig"),
+    const image_mod = b.addModule("image", .{
+        .root_source_file = b.path("src/image/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    const jpeg_mod = b.addModule("jpeg", .{
+        .root_source_file = b.path("src/jpeg/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const png_mod = b.addModule("png", .{
+        .root_source_file = b.path("src/png/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Add dependencies between modules
     image_mod.addImport("color", color_mod);
     jpeg_mod.addImport("image", image_mod);
     png_mod.addImport("image", image_mod);
     png_mod.addImport("color", color_mod);
 
-    lib_mod.addImport("image", image_mod);
-    lib_mod.addImport("color", color_mod);
-    lib_mod.addImport("jpeg", jpeg_mod);
-    lib_mod.addImport("png", png_mod);
+    // Add submodules to main zpix module
+    zpix_mod.addImport("color", color_mod);
+    zpix_mod.addImport("image", image_mod);
+    zpix_mod.addImport("jpeg", jpeg_mod);
+    zpix_mod.addImport("png", png_mod);
 
+    // Tests
     const jpeg_tests = b.addTest(.{ .root_module = jpeg_mod });
     const png_tests = b.addTest(.{ .root_module = png_mod });
 
@@ -52,9 +61,10 @@ pub fn build(b: *std.Build) !void {
     const test_step_png = b.step("test-png", "Run unit tests");
     test_step_png.dependOn(&run_png_tests.step);
 
+    // Documentation
     const docs_lib = b.addStaticLibrary(.{
         .name = "zpix",
-        .root_module = lib_mod,
+        .root_module = zpix_mod,
     });
 
     const install_docs = b.addInstallDirectory(.{
@@ -71,8 +81,9 @@ pub fn build(b: *std.Build) !void {
     const serve_run = b.addSystemCommand(&a3);
     serve_step.dependOn(&serve_run.step);
 
+    // Example builds
     const exe = try buildExample(b, optimize, target);
-    exe.root_module.addImport("zpix", lib_mod);
+    exe.root_module.addImport("zpix", zpix_mod);
 
     const sng_exe = b.addExecutable(.{
         .name = "sng",
@@ -82,7 +93,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         }),
     });
-    sng_exe.root_module.addImport("zpix", lib_mod);
+    sng_exe.root_module.addImport("zpix", zpix_mod);
     b.installArtifact(sng_exe);
 }
 
