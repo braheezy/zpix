@@ -1,5 +1,5 @@
 const std = @import("std");
-const loadFromBuffer = @import("zpix").png.loadFromBuffer;
+const load = @import("zpix").png.load;
 const sng = @import("zpix").png.sng;
 
 pub fn main() !void {
@@ -12,8 +12,21 @@ pub fn main() !void {
             std.process.exit(1);
         }
     }
-    const file = @embedFile("basn0g01.png");
-    const img = try loadFromBuffer(allocator, file);
+    // args parsing
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    var filename: ?[]const u8 = null;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try std.io.getStdOut().writer().print("Usage: sng <filename>\n", .{});
+            std.process.exit(0);
+        } else {
+            filename = arg;
+        }
+    }
+
+    const img = try load(allocator, filename.?);
     defer img.free(allocator);
     const stdout = std.io.getStdOut().writer();
     try sng(stdout, "basn0g01", img);
