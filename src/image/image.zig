@@ -727,7 +727,7 @@ pub const Gray16Image = struct {
     // the pixel at (x, y).
     pub fn pixOffset(self: Gray16Image, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
-        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 1;
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 2;
     }
 
     pub fn bounds(self: Gray16Image) Rectangle {
@@ -735,16 +735,16 @@ pub const Gray16Image = struct {
     }
 
     pub fn at(self: Gray16Image, x: i32, y: i32) Color {
-        return Color.fromGray16(self.gray16At(x, y));
+        return Color{ .gray16 = self.gray16At(x, y) };
     }
 
-    fn gray16At(self: Gray16Image, x: i32, y: i32) u8 {
+    fn gray16At(self: Gray16Image, x: i32, y: i32) Gray16 {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return 0;
+            return .{ .y = 0 };
         }
         const i = self.pixOffset(x, y);
-        return self.pixels[@intCast(i)];
+        return .{ .y = @as(u16, @intCast(self.pixels[@intCast(i)])) << 8 | @as(u16, @intCast(self.pixels[@intCast(i + 1)])) };
     }
 
     pub fn setGray16(self: Gray16Image, x: i32, y: i32, c: Gray16) void {

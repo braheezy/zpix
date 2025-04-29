@@ -815,8 +815,8 @@ fn readImagePass(
             },
             .g16 => {
                 for (0..width) |x| {
-                    const y_column = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[x * 2 + 1]));
-                    gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_column });
+                    const y_color = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[(x * 2) + 1]));
+                    gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_color });
                 }
             },
             .ga8 => {
