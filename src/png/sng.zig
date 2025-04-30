@@ -50,7 +50,10 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
             .Gray, .Gray16 => {
                 try writer.print("    using grayscale;\n", .{});
             },
-            .RGBA, .NRGBA => {
+            .RGBA, .RGBA64 => {
+                try writer.print("    using color;\n", .{});
+            },
+            .NRGBA, .NRGBA64 => {
                 try writer.print("    using color alpha;\n", .{});
             },
             .Paletted => {
@@ -78,16 +81,35 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     const dx: usize = @intCast(bounds.dX());
     for (0..dy) |y| {
         const y_int: i32 = @intCast(y);
-        switch (img) {
-            .Gray => {
-                for (0..dx) |x| {
-                    const x_int: i32 = @intCast(x);
-                    const color = img.at(x_int, y_int);
+        for (0..dx) |x| {
+            const x_int: i32 = @intCast(x);
+            const color = img.at(x_int, y_int);
+            switch (img) {
+                .Gray => {
                     try writer.print("{x:02}", .{color.gray.y});
-                }
-            },
-            else => {},
+                },
+                .Gray16 => {
+                    try writer.print("{x:04} ", .{color.gray16.y});
+                },
+                .RGBA => {
+                    try writer.print("{x:02}{x:02}{x:02} ", .{
+                        color.rgba.r,
+                        color.rgba.g,
+                        color.rgba.b,
+                    });
+                },
+                .RGBA64 => {
+                    try writer.print("{x:04}{x:04}{x:04}{x:04} ", .{
+                        color.rgba64.r,
+                        color.rgba64.g,
+                        color.rgba64.b,
+                        color.rgba64.a,
+                    });
+                },
+                else => {},
+            }
         }
+
         try writer.print("\n", .{});
     }
     try writer.print("}}\n", .{});

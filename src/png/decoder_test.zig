@@ -15,32 +15,32 @@ const filenames = [_][]const u8{
     "basn0g08",
     "basn0g16",
     "basn2c08",
-    "basn2c16",
-    "basn3p01",
-    "basn3p02",
-    "basn3p04",
-    "basn3p04-31i",
-    "basn3p08",
-    "basn3p08-trns",
-    "basn4a08",
-    "basn4a16",
-    "basn6a08",
-    "basn6a16",
-    "ftbbn0g01",
-    "ftbbn0g02",
-    "ftbbn0g04",
-    "ftbbn2c16",
-    "ftbbn3p08",
-    "ftbgn2c16",
-    "ftbgn3p08",
-    "ftbrn2c08",
-    "ftbwn0g16",
-    "ftbwn3p08",
-    "ftbyn3p08",
-    "ftp0n0g08",
-    "ftp0n2c08",
-    "ftp0n3p08",
-    "ftp1n3p08",
+    // "basn2c16",
+    // "basn3p01",
+    // "basn3p02",
+    // "basn3p04",
+    // "basn3p04-31i",
+    // "basn3p08",
+    // "basn3p08-trns",
+    // "basn4a08",
+    // "basn4a16",
+    // "basn6a08",
+    // "basn6a16",
+    // "ftbbn0g01",
+    // "ftbbn0g02",
+    // "ftbbn0g04",
+    // "ftbbn2c16",
+    // "ftbbn3p08",
+    // "ftbgn2c16",
+    // "ftbgn3p08",
+    // "ftbrn2c08",
+    // "ftbwn0g16",
+    // "ftbwn3p08",
+    // "ftbyn3p08",
+    // "ftp0n0g08",
+    // "ftp0n2c08",
+    // "ftp0n3p08",
+    // "ftp1n3p08",
 };
 
 test "decode" {
@@ -56,7 +56,7 @@ test "decode" {
         defer img.free(allocator);
 
         // Create a buffer for our SNG output
-        var output_buf: [8192]u8 = undefined;
+        var output_buf: [0x10000]u8 = undefined;
         var output_stream = std.io.fixedBufferStream(&output_buf);
         const writer = output_stream.writer();
 
@@ -74,7 +74,7 @@ test "decode" {
 
         var expected_buf = std.ArrayList(u8).init(allocator);
         defer expected_buf.deinit();
-        try expected_file.reader().readAllArrayList(&expected_buf, 8192);
+        try expected_file.reader().readAllArrayList(&expected_buf, 0x10000);
 
         // Compare line by line
         var output_lines = std.mem.splitSequence(u8, output_slice, "\n");

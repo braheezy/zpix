@@ -25,9 +25,13 @@ pub fn main() !void {
             filename = arg;
         }
     }
+    if (filename == null) {
+        try std.io.getStdOut().writer().print("Usage: sng <filename>\n", .{});
+        std.process.exit(0);
+    }
 
     const img = try load(allocator, filename.?);
     defer img.free(allocator);
     const stdout = std.io.getStdOut().writer();
-    try sng(stdout, "basn0g01", img);
+    try sng(stdout, filename.?, img);
 }
