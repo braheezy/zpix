@@ -21,6 +21,29 @@ var fake_ihdr_usings = std.StaticStringMap([]const u8).initComptime(.{
     .{ "ftbrn2c08", "    using color;\n" },
     .{ "ftbwn0g16", "    using grayscale;\n" },
 });
+// fakegAMAs maps from filenames to fake gAMA chunks for our approximation to
+// the sng command-line tool. Package png doesn't keep that metadata when
+// png.Decode returns an image.Image.
+var fake_gamas = std.StaticStringMap([]const u8).initComptime(.{
+    "ftbbn0g01", "",
+    "ftbbn0g02", "gAMA {0.45455}\n",
+});
+// fakebKGDs maps from filenames to fake bKGD chunks for our approximation to
+// the sng command-line tool. Package png doesn't keep that metadata when
+// png.Decode returns an image.Image.
+var fake_bkgds = std.StaticStringMap([]const u8).initComptime(.{
+    "ftbbn0g01", "bKGD {gray: 0;}\n",
+    "ftbbn0g02", "bKGD {gray: 0;}\n",
+    "ftbbn0g04", "bKGD {gray: 0;}\n",
+    "ftbbn2c16", "bKGD {red: 0;  green: 0;  blue: 65535;}\n",
+    "ftbbn3p08", "bKGD {red: 0;  green: 0;  blue: 65535;}\n",
+    "ftbgn2c16", "bKGD {red: 0;  green: 65535;  blue: 0;}\n",
+    "ftbgn3p08", "bKGD {index: 245}\n",
+    "ftbrn2c08", "bKGD {red: 255;  green: 0;  blue: 0;}\n",
+    "ftbwn0g16", "bKGD {gray: 65535;}\n",
+    "ftbwn3p08", "bKGD {index: 0}\n",
+    "ftbyn3p08", "bKGD {index: 245}\n",
+});
 
 pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     const bounds = img.bounds();
@@ -66,14 +89,103 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     }
 
     try writer.print("}}\n", .{});
-    try writer.print("gAMA {{1.0000}}\n", .{});
+    if (fake_gamas.get(filename)) |gama| {
+        try writer.print("{s}", .{gama});
+    } else {
+        try writer.print("gAMA {{1.0000}}\n", .{});
+    }
+
+    var use_transparent = false;
     switch (img) {
-        .Paletted => {
+        .Paletted => |p| {
             try writer.print("PLTE {{\n", .{});
+            var last_alpha: ?usize = null;
+
+            for (p.palette, 0..) |c, i| {
+                var r: u8 = 0;
+                var g: u8 = 0;
+                var b: u8 = 0;
+                var a: u8 = 0xff;
+                switch (c) {
+                    .rgba => |rgba| {
+                        r = rgba.r;
+                        g = rgba.g;
+                        b = rgba.b;
+                        a = 0xff;
+                    },
+                    .nrgba => |nrgba| {
+                        r = nrgba.r;
+                        g = nrgba.g;
+                        b = nrgba.b;
+                        a = nrgba.a;
+                    },
+                    else => unreachable,
+                }
+                if (a != 0xff) {
+                    last_alpha = i;
+                }
+                try writer.print("    ({d},{d},{d})     # rgb = (0x{d:02x},0x{d:02x},0x{d:02x})\n", .{ r, g, b, r, g, b });
+            }
 
             try writer.print("}}\n", .{});
+
+            if (fake_bkgds.get(filename)) |bkgd| {
+                try writer.print("{s}", .{bkgd});
+            }
+            if (last_alpha) |alpha| {
+                try writer.print(" tRNS {{\n", .{});
+                for (0..alpha) |i| {
+                    const color = p.palette[i].toRGBA();
+                    const a = color.a >> 8;
+                    try writer.print(" {d}", .{a});
+                }
+                try writer.print("}}\n", .{});
+            }
         },
-        else => {},
+        else => {
+            if (std.mem.startsWith(u8, filename, "ft")) {
+                if (fake_bkgds.get(filename)) |bkgd| {
+                    try writer.print("{s}", .{bkgd});
+                }
+                // We fake a tRNS chunk. The test files' grayscale and truecolor
+                // transparent images all have their top left corner transparent.
+                const c = img.at(0, 0);
+                switch (c) {
+                    .nrgba => {
+                        if (c.a == 0) {
+                            use_transparent = true;
+                            try writer.print("tRNS {{\n", .{});
+                            if (std.mem.eql(u8, filename, "ftbbn0g01") or
+                                std.mem.eql(u8, filename, "ftbbn0g02") or
+                                std.mem.eql(u8, filename, "ftbbn0g04"))
+                            {
+                                // The standard image package doesn't have a "gray with
+                                // alpha" type. Instead, we use an image.NRGBA.
+                                try writer.print("    gray: {d};\n", .{c.r});
+                            } else {
+                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ c.r, c.g, c.b });
+                            }
+                            try writer.print("}}\n", .{});
+                        }
+                    },
+                    .nrgba64 => {
+                        if (c.a == 0) {
+                            use_transparent = true;
+                            try writer.print("tRNS {{\n", .{});
+                            if (std.mem.eql(u8, filename, "ftbwn0g16")) {
+                                // The standard image package doesn't have a "gray16 with
+                                // alpha" type. Instead, we use an image.NRGBA64.
+                                try writer.print("    gray: {d};\n", .{c.r});
+                            } else {
+                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ c.r, c.g, c.b });
+                            }
+                            try writer.print("}}\n", .{});
+                        }
+                    },
+                    else => {},
+                }
+            }
+        },
     }
     try writer.print("IMAGE {{\n    pixels hex\n", .{});
 
@@ -81,33 +193,119 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     const dx: usize = @intCast(bounds.dX());
     for (0..dy) |y| {
         const y_int: i32 = @intCast(y);
-        for (0..dx) |x| {
-            const x_int: i32 = @intCast(x);
-            const color = img.at(x_int, y_int);
-            switch (img) {
-                .Gray => {
+        switch (img) {
+            .Gray => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
                     try writer.print("{x:02}", .{color.gray.y});
-                },
-                .Gray16 => {
+                }
+            },
+            .Gray16 => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
                     try writer.print("{x:04} ", .{color.gray16.y});
-                },
-                .RGBA => {
+                }
+            },
+            .RGBA => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
                     try writer.print("{x:02}{x:02}{x:02} ", .{
                         color.rgba.r,
                         color.rgba.g,
                         color.rgba.b,
                     });
-                },
-                .RGBA64 => {
+                }
+            },
+            .RGBA64 => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
                     try writer.print("{x:04}{x:04}{x:04}{x:04} ", .{
                         color.rgba64.r,
                         color.rgba64.g,
                         color.rgba64.b,
                         color.rgba64.a,
                     });
-                },
-                else => {},
-            }
+                }
+            },
+            .NRGBA => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
+                    if (std.mem.eql(u8, filename, "ftbbn0g01") or
+                        std.mem.eql(u8, filename, "ftbbn0g02") or
+                        std.mem.eql(u8, filename, "ftbbn0g04"))
+                    {
+                        try writer.print("{x:02}", .{color.nrgba.r});
+                    } else {
+                        if (use_transparent) {
+                            try writer.print("{x:02}{x:02}{x:02} ", .{
+                                color.nrgba.r,
+                                color.nrgba.g,
+                                color.nrgba.b,
+                            });
+                        } else {
+                            try writer.print("{x:02}{x:02}{x:02}{x:02} ", .{
+                                color.nrgba.r,
+                                color.nrgba.g,
+                                color.nrgba.b,
+                                color.nrgba.a,
+                            });
+                        }
+                    }
+                }
+            },
+            .NRGBA64 => {
+                for (0..dx) |x| {
+                    const x_int: i32 = @intCast(x);
+                    const color = img.at(x_int, y_int);
+                    if (std.mem.eql(u8, filename, "ftbwn0g16")) {
+                        try writer.print("{x:04}", .{color.nrgba.r});
+                    } else {
+                        if (use_transparent) {
+                            try writer.print("{x:04}{x:04}{x:04} ", .{
+                                color.nrgba64.r,
+                                color.nrgba64.g,
+                                color.nrgba64.b,
+                            });
+                        } else {
+                            try writer.print("{x:04}{x:04}{x:04}{x:04} ", .{
+                                color.nrgba64.r,
+                                color.nrgba64.g,
+                                color.nrgba64.b,
+                                color.nrgba64.a,
+                            });
+                        }
+                    }
+                }
+            },
+            .Paletted => |p| {
+                var b: usize = 0;
+                var c: usize = 0;
+                for (0..dx) |x| {
+                    // const x_int: i32 = @intCast(x);
+                    // const color = img.at(x_int, y_int);
+
+                    b = b << bit_depth | p.colorIndexAt(x, y);
+                    c += 1;
+                    if (c == 8 / bit_depth) {
+                        try writer.print("{x:02}", .{b});
+                        b = 0;
+                        c = 0;
+                    }
+                }
+                if (c != 0) {
+                    while (c != 8 / bit_depth) {
+                        b = b << bit_depth;
+                        c += 1;
+                    }
+                    try writer.print("{x:02}", .{b});
+                }
+            },
+            else => {},
         }
 
         try writer.print("\n", .{});

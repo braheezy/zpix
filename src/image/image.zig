@@ -877,6 +877,15 @@ pub const PalettedImage = struct {
         const pixel_index: usize = @intCast(self.pixOffset(x, y));
         self.pixels[pixel_index] = index;
     }
+
+    pub fn colorIndexAt(self: PalettedImage, x: i32, y: i32) u8 {
+        const pt = Point{ .x = x, .y = y };
+        if (!pt.In(self.rect)) {
+            return 0;
+        }
+        const i = self.pixOffset(x, y);
+        return self.pixels[@intCast(i)];
+    }
 };
 
 /// pixelBufferLength returns the length of the []u8 typed pixels slice field.
