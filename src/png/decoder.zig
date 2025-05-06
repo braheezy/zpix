@@ -858,7 +858,8 @@ fn readImagePass(
                 }
             },
             .p1 => {
-                for (0..width) |x| {
+                var x: usize = 0;
+                while (x < width) : (x += 8) {
                     var bit_index = cdat[x / 8];
                     var x2: usize = 0;
                     while (x2 < 8 and x + x2 < width) : (x2 += 1) {

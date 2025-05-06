@@ -25,24 +25,24 @@ var fake_ihdr_usings = std.StaticStringMap([]const u8).initComptime(.{
 // the sng command-line tool. Package png doesn't keep that metadata when
 // png.Decode returns an image.Image.
 var fake_gamas = std.StaticStringMap([]const u8).initComptime(.{
-    "ftbbn0g01", "",
-    "ftbbn0g02", "gAMA {0.45455}\n",
+    .{ "ftbbn0g01", "" },
+    .{ "ftbbn0g02", "gAMA {0.45455}\n" },
 });
 // fakebKGDs maps from filenames to fake bKGD chunks for our approximation to
 // the sng command-line tool. Package png doesn't keep that metadata when
 // png.Decode returns an image.Image.
 var fake_bkgds = std.StaticStringMap([]const u8).initComptime(.{
-    "ftbbn0g01", "bKGD {gray: 0;}\n",
-    "ftbbn0g02", "bKGD {gray: 0;}\n",
-    "ftbbn0g04", "bKGD {gray: 0;}\n",
-    "ftbbn2c16", "bKGD {red: 0;  green: 0;  blue: 65535;}\n",
-    "ftbbn3p08", "bKGD {red: 0;  green: 0;  blue: 65535;}\n",
-    "ftbgn2c16", "bKGD {red: 0;  green: 65535;  blue: 0;}\n",
-    "ftbgn3p08", "bKGD {index: 245}\n",
-    "ftbrn2c08", "bKGD {red: 255;  green: 0;  blue: 0;}\n",
-    "ftbwn0g16", "bKGD {gray: 65535;}\n",
-    "ftbwn3p08", "bKGD {index: 0}\n",
-    "ftbyn3p08", "bKGD {index: 245}\n",
+    .{ "ftbbn0g01", "bKGD {gray: 0;}\n" },
+    .{ "ftbbn0g02", "bKGD {gray: 0;}\n" },
+    .{ "ftbbn0g04", "bKGD {gray: 0;}\n" },
+    .{ "ftbbn2c16", "bKGD {red: 0;  green: 0;  blue: 65535;}\n" },
+    .{ "ftbbn3p08", "bKGD {red: 0;  green: 0;  blue: 65535;}\n" },
+    .{ "ftbgn2c16", "bKGD {red: 0;  green: 65535;  blue: 0;}\n" },
+    .{ "ftbgn3p08", "bKGD {index: 245}\n" },
+    .{ "ftbrn2c08", "bKGD {red: 255;  green: 0;  blue: 0;}\n" },
+    .{ "ftbwn0g16", "bKGD {gray: 65535;}\n" },
+    .{ "ftbwn3p08", "bKGD {index: 0}\n" },
+    .{ "ftbyn3p08", "bKGD {index: 245}\n" },
 });
 
 pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
@@ -124,7 +124,14 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 if (a != 0xff) {
                     last_alpha = i;
                 }
-                try writer.print("    ({d},{d},{d})     # rgb = (0x{d:02x},0x{d:02x},0x{d:02x})\n", .{ r, g, b, r, g, b });
+                try writer.print("    ({d:3},{d:3},{d:3})     # rgb = (0x{x:02},0x{x:02},0x{x:02})\n", .{
+                    r,
+                    g,
+                    b,
+                    r,
+                    g,
+                    b,
+                });
             }
 
             try writer.print("}}\n", .{});
@@ -135,8 +142,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
             if (last_alpha) |alpha| {
                 try writer.print(" tRNS {{\n", .{});
                 for (0..alpha) |i| {
-                    const color = p.palette[i].toRGBA();
-                    const a = color.a >> 8;
+                    _, _, _, const color_alpha = p.palette[i].toRGBA();
+                    const a = color_alpha >> 8;
                     try writer.print(" {d}", .{a});
                 }
                 try writer.print("}}\n", .{});
@@ -151,8 +158,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 // transparent images all have their top left corner transparent.
                 const c = img.at(0, 0);
                 switch (c) {
-                    .nrgba => {
-                        if (c.a == 0) {
+                    .nrgba => |nrgba| {
+                        if (nrgba.a == 0) {
                             use_transparent = true;
                             try writer.print("tRNS {{\n", .{});
                             if (std.mem.eql(u8, filename, "ftbbn0g01") or
@@ -161,23 +168,23 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                             {
                                 // The standard image package doesn't have a "gray with
                                 // alpha" type. Instead, we use an image.NRGBA.
-                                try writer.print("    gray: {d};\n", .{c.r});
+                                try writer.print("    gray: {d};\n", .{nrgba.r});
                             } else {
-                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ c.r, c.g, c.b });
+                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ nrgba.r, nrgba.g, nrgba.b });
                             }
                             try writer.print("}}\n", .{});
                         }
                     },
-                    .nrgba64 => {
-                        if (c.a == 0) {
+                    .nrgba64 => |nrgba64| {
+                        if (nrgba64.a == 0) {
                             use_transparent = true;
                             try writer.print("tRNS {{\n", .{});
                             if (std.mem.eql(u8, filename, "ftbwn0g16")) {
                                 // The standard image package doesn't have a "gray16 with
                                 // alpha" type. Instead, we use an image.NRGBA64.
-                                try writer.print("    gray: {d};\n", .{c.r});
+                                try writer.print("    gray: {d};\n", .{nrgba64.r});
                             } else {
-                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ c.r, c.g, c.b });
+                                try writer.print("    red: {d}; green: {d}; blue: {d};\n", .{ nrgba64.r, nrgba64.g, nrgba64.b });
                             }
                             try writer.print("}}\n", .{});
                         }
@@ -223,11 +230,10 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 for (0..dx) |x| {
                     const x_int: i32 = @intCast(x);
                     const color = img.at(x_int, y_int);
-                    try writer.print("{x:04}{x:04}{x:04}{x:04} ", .{
+                    try writer.print("{x:04}{x:04}{x:04} ", .{
                         color.rgba64.r,
                         color.rgba64.g,
                         color.rgba64.b,
-                        color.rgba64.a,
                     });
                 }
             },
@@ -286,10 +292,7 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 var b: usize = 0;
                 var c: usize = 0;
                 for (0..dx) |x| {
-                    // const x_int: i32 = @intCast(x);
-                    // const color = img.at(x_int, y_int);
-
-                    b = b << bit_depth | p.colorIndexAt(x, y);
+                    b = (b << @as(u6, @intCast(bit_depth))) | (p.colorIndexAt(@intCast(x), @intCast(y)));
                     c += 1;
                     if (c == 8 / bit_depth) {
                         try writer.print("{x:02}", .{b});
@@ -299,7 +302,7 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 }
                 if (c != 0) {
                     while (c != 8 / bit_depth) {
-                        b = b << bit_depth;
+                        b = b << @as(u6, @intCast(bit_depth));
                         c += 1;
                     }
                     try writer.print("{x:02}", .{b});
