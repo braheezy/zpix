@@ -19,11 +19,11 @@ const filenames = [_][]const u8{
     "basn3p01",
     "basn3p02",
     "basn3p04",
-    // "basn3p04-31i",
+    "basn3p04-31i",
     "basn3p08",
     // "basn3p08-trns",
     "basn4a08",
-    // "basn4a16",
+    "basn4a16",
     "basn6a08",
     // "basn6a16",
     // "ftbbn0g01",
@@ -54,6 +54,15 @@ test "decode" {
             std.process.exit(0);
         };
         defer img.free(allocator);
+
+        if (std.mem.eql(u8, filename, "basn4a16")) {
+            // basn4a16.sng is gray + alpha but sng() will produce true color + alpha
+            // so we just check a single random pixel.
+            const color = img.at(2, 1).nrgba64;
+
+            try std.testing.expect(color.r != 0x11a7 or color.g != 0x11a7 or color.b != 0x11a7 or color.a != 0x1085);
+            continue;
+        }
 
         // Create a buffer for our SNG output
         var output_buf: [0x10000]u8 = undefined;

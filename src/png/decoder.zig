@@ -276,6 +276,7 @@ fn parseChunk(self: *Decoder) !void {
             // Process all consecutive IDAT chunks
             return try self.parseIdat(chunk_header.length);
         },
+        .trns => return error.NotImplemented,
         .iend => {
             // IEND must be the last chunk
             if (self.stage != .seen_idat) {
@@ -508,9 +509,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
                     return err;
                 };
 
-                // TODO: We should merge the pass image into the main image
-                // try self.mergePassInto(self.img, pass_img, pass);
-                _ = pass_img; // Will use this when implementing mergePassInto
+                try mergePassInto(&self.img, pass_img, pass);
             }
         }
     } else {
@@ -1072,43 +1071,88 @@ fn colorDepthPaletted(color_depth: ColorBitDepth) bool {
 }
 
 // Implementation of mergePassInto to combine interlaced passes
-fn mergePassInto(self: *Decoder, dst_img: image.Image, src_img: image.Image, pass: u8) !void {
-    // Implement the logic to merge an interlaced pass into the main image
+fn mergePassInto(dst_img: *image.Image, src_img: image.Image, pass: u8) !void {
     // This is needed for Adam7 interlacing
-    const p = interlacing[pass];
+    const interlace_pass = interlacing[pass];
 
-    switch (self.color_depth) {
-        .tc8 => {
-            if (dst_img == .RGBA and src_img == .RGBA) {
-                const dst = dst_img.RGBA;
-                const src = src_img.RGBA;
-                const src_rect = src.bounds();
-                const src_width = src_rect.dX();
+    var src_pixels: []u8 = undefined;
+    var dst_pixels: []u8 = undefined;
+    var stride: usize = 0;
+    var rect: image.Rectangle = undefined;
+    var bytes_per_pixel: usize = 0;
 
-                var y: usize = 0;
-                var dy = p.y_offset;
-
-                while (y < src_rect.dY()) : (y += 1) {
-                    var x: usize = 0;
-                    var dx = p.x_offset;
-
-                    while (x < src_width) : (x += 1) {
-                        const src_offset = y * src.stride + x * 4;
-                        const dst_offset = dy * dst.stride + dx * 4;
-
-                        dst.pixels[dst_offset + 0] = src.pixels[src_offset + 0]; // R
-                        dst.pixels[dst_offset + 1] = src.pixels[src_offset + 1]; // G
-                        dst.pixels[dst_offset + 2] = src.pixels[src_offset + 2]; // B
-                        dst.pixels[dst_offset + 3] = src.pixels[src_offset + 3]; // A
-
-                        dx += p.x_factor;
-                    }
-
-                    dy += p.y_factor;
-                }
+    switch (dst_img.*) {
+        .RGBA => |target| {
+            bytes_per_pixel = 4;
+            stride = target.stride;
+            src_pixels = src_img.RGBA.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .RGBA64 => |target| {
+            bytes_per_pixel = 8;
+            stride = target.stride;
+            src_pixels = src_img.RGBA64.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .NRGBA => |target| {
+            bytes_per_pixel = 4;
+            stride = target.stride;
+            src_pixels = src_img.NRGBA.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .NRGBA64 => |target| {
+            bytes_per_pixel = 8;
+            stride = target.stride;
+            src_pixels = src_img.NRGBA64.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .Gray => |target| {
+            bytes_per_pixel = 1;
+            stride = target.stride;
+            src_pixels = src_img.Gray.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .Gray16 => |target| {
+            bytes_per_pixel = 2;
+            stride = target.stride;
+            src_pixels = src_img.Gray16.pixels;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+        },
+        .Paletted => |*target| {
+            const source = src_img.Paletted;
+            src_pixels = source.pixels;
+            bytes_per_pixel = 1;
+            stride = target.stride;
+            dst_pixels = target.pixels;
+            rect = target.rect;
+            if (target.palette.len < source.palette.len) {
+                // readImagePass can return a paletted image whose implicit palette
+                // length (one more than the maximum Pix value) is larger than the
+                // explicit palette length (what's in the PLTE chunk). Make the
+                // same adjustment here.
+                target.*.palette = source.palette[0..source.palette.len];
             }
         },
-        // Add cases for other color types as you implement them
-        else => return error.Unimplemented,
+        else => return error.UnsupportedImageFormat,
+    }
+    var s: usize = 0;
+    const bounds = src_img.bounds();
+    var y: u32 = @intCast(bounds.min.y);
+    while (y < bounds.max.y) : (y += 1) {
+        const rect_y: u32 = @intCast(rect.min.y);
+        const rect_x: u32 = @intCast(rect.min.x);
+        const d_base = (y * interlace_pass.y_factor + interlace_pass.y_offset - rect_y) * stride + (interlace_pass.x_offset - rect_x) * bytes_per_pixel;
+        var x: u32 = @intCast(bounds.min.x);
+        while (x < bounds.max.x) : (x += 1) {
+            const d = d_base + x * interlace_pass.x_factor * bytes_per_pixel;
+            @memcpy(dst_pixels[d .. d + bytes_per_pixel], src_pixels[s .. s + bytes_per_pixel]);
+            s += bytes_per_pixel;
+        }
     }
 }
