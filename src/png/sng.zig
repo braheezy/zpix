@@ -60,7 +60,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
         else => 16,
     };
 
-    try writer.print("#SNG: from {s}.png\nIHDR {{\n", .{filename});
+    const basename = std.fs.path.basename(filename);
+    try writer.print("#SNG: from {s}.png\nIHDR {{\n", .{basename});
     try writer.print(
         "    width: {d}; height: {d}; bitdepth: {d};\n",
         .{ bounds.dX(), bounds.dY(), bit_depth },
@@ -136,11 +137,11 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
 
             try writer.print("}}\n", .{});
 
-            if (fake_bkgds.get(filename)) |bkgd| {
+            if (fake_bkgds.get(basename)) |bkgd| {
                 try writer.print("{s}", .{bkgd});
             }
             if (last_alpha) |alpha| {
-                try writer.print(" tRNS {{\n", .{});
+                try writer.print("tRNS {{\n", .{});
                 for (0..alpha) |i| {
                     _, _, _, const color_alpha = p.palette[i].toRGBA();
                     const a = color_alpha >> 8;
@@ -150,8 +151,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
             }
         },
         else => {
-            if (std.mem.startsWith(u8, filename, "ft")) {
-                if (fake_bkgds.get(filename)) |bkgd| {
+            if (std.mem.startsWith(u8, basename, "ft")) {
+                if (fake_bkgds.get(basename)) |bkgd| {
                     try writer.print("{s}", .{bkgd});
                 }
                 // We fake a tRNS chunk. The test files' grayscale and truecolor

@@ -134,6 +134,10 @@ crc: std.hash.Crc32,
 stage: Stage = .start,
 palette: ?Palette = null,
 idat_length: u32 = 0,
+// use_transparent and transparent are used for grayscale and truecolor
+// transparency, as opposed to palette transparency.
+use_transparent: bool = false,
+transparent: [6]u8 = [_]u8{0} ** 6,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
 pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
@@ -276,7 +280,27 @@ fn parseChunk(self: *Decoder) !void {
             // Process all consecutive IDAT chunks
             return try self.parseIdat(chunk_header.length);
         },
-        .trns => return error.NotImplemented,
+        .trns => {
+            switch (self.color_depth) {
+                .p1, .p2, .p4, .p8 => {
+                    if (self.stage != .seen_plte) {
+                        return error.ChunkOrderTrns1Error;
+                    }
+                },
+                .tc8, .tc16 => {
+                    if (self.stage != .seen_ihdr and self.stage != .seen_plte) {
+                        return error.ChunkOrderTrns2Error;
+                    }
+                },
+                else => {
+                    if (self.stage != .seen_ihdr) {
+                        return error.ChunkOrderTrns3Error;
+                    }
+                },
+            }
+            self.stage = .seen_trns;
+            return try self.parseTrns(chunk_header.length);
+        },
         .iend => {
             // IEND must be the last chunk
             if (self.stage != .seen_idat) {
@@ -517,6 +541,63 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
     }
 }
 
+fn parseTrns(self: *Decoder, length: u32) !void {
+    switch (self.color_depth) {
+        .g1, .g2, .g4, .g8, .g16 => {
+            if (length != 2) {
+                return error.BadTrnsLength;
+            }
+            try self.r.readNoEof(self.scratch[0..length]);
+            self.crc.update(self.scratch[0..length]);
+
+            const copy_len = @min(length, 6);
+            @memcpy(self.transparent[0..copy_len], self.scratch[0..copy_len]);
+            self.transparent[1] *= switch (self.color_depth) {
+                .g1 => 0xff,
+                .g2 => 0x55,
+                .g4 => 0x11,
+                else => 1,
+            };
+            self.use_transparent = true;
+        },
+        .tc8, .tc16 => {
+            if (length != 6) {
+                return error.BadTrnsLength;
+            }
+            try self.r.readNoEof(self.scratch[0..length]);
+            self.crc.update(self.scratch[0..length]);
+
+            const copy_len = @min(length, 6);
+            @memcpy(self.transparent[0..copy_len], self.scratch[0..copy_len]);
+            self.use_transparent = true;
+        },
+        .p1, .p2, .p4, .p8 => {
+            if (length > 256) {
+                return error.BadTrnsLength;
+            }
+            try self.r.readNoEof(self.scratch[0..length]);
+            self.crc.update(self.scratch[0..length]);
+
+            if (self.palette.?.len < length) {
+                self.palette = self.palette.?[0..length];
+            }
+
+            for (0..length) |i| {
+                const rgba = self.palette.?[i].rgba;
+                self.palette.?[i] = .{ .nrgba = .{
+                    .r = rgba.r,
+                    .g = rgba.g,
+                    .b = rgba.b,
+                    .a = self.scratch[i],
+                } };
+            }
+        },
+        else => return error.TrnsColorTypeMismatch,
+    }
+
+    return try self.verifyChecksum();
+}
+
 fn parsePlte(self: *Decoder, length: u32) !void {
     const num_palettes = length / 3;
     if (length % 3 != 0 or num_palettes <= 0 or num_palettes > 256 or num_palettes > @as(u32, 1) << @as(u5, @intCast(self.depth))) {
@@ -628,8 +709,13 @@ fn readImagePass(
     // Create the image based on color type, setting the appropriate pointer
     switch (self.color_depth) {
         .g1, .g2, .g4, .g8 => {
-            gray = try image.GrayImage.init(self.allocator, rect);
-            img = .{ .Gray = gray };
+            if (self.use_transparent) {
+                nrgba = try image.NRGBAImage.init(self.allocator, rect);
+                img = .{ .NRGBA = nrgba };
+            } else {
+                gray = try image.GrayImage.init(self.allocator, rect);
+                img = .{ .Gray = gray };
+            }
         },
         .ga8 => {
             nrgba = try image.NRGBAImage.init(self.allocator, rect);
@@ -640,16 +726,31 @@ fn readImagePass(
             img = .{ .NRGBA64 = nrgba64 };
         },
         .g16 => {
-            gray16 = try image.Gray16Image.init(self.allocator, rect);
-            img = .{ .Gray16 = gray16 };
+            if (self.use_transparent) {
+                nrgba64 = try image.NRGBA64Image.init(self.allocator, rect);
+                img = .{ .NRGBA64 = nrgba64 };
+            } else {
+                gray16 = try image.Gray16Image.init(self.allocator, rect);
+                img = .{ .Gray16 = gray16 };
+            }
         },
         .tc8 => {
-            rgba = try image.RGBAImage.init(self.allocator, rect);
-            img = .{ .RGBA = rgba };
+            if (self.use_transparent) {
+                nrgba = try image.NRGBAImage.init(self.allocator, rect);
+                img = .{ .NRGBA = nrgba };
+            } else {
+                rgba = try image.RGBAImage.init(self.allocator, rect);
+                img = .{ .RGBA = rgba };
+            }
         },
         .tc16 => {
-            rgba64 = try image.RGBA64Image.init(self.allocator, rect);
-            img = .{ .RGBA64 = rgba64 };
+            if (self.use_transparent) {
+                nrgba64 = try image.NRGBA64Image.init(self.allocator, rect);
+                img = .{ .NRGBA64 = nrgba64 };
+            } else {
+                rgba64 = try image.RGBA64Image.init(self.allocator, rect);
+                img = .{ .RGBA64 = rgba64 };
+            }
         },
         .tca8 => {
             nrgba = try image.NRGBAImage.init(self.allocator, rect);
@@ -742,80 +843,199 @@ fn readImagePass(
 
         // Convert bytes to colors based on color type
         switch (self.color_depth) {
-            .tc8 => {
-                const rgba_img = img.RGBA;
-                // RGB to RGBA conversion
-                const pix = rgba_img.pixels;
-                var i: usize = pixel_offset;
-                var j: usize = 0;
-
-                while (j < cdat.len) : ({
-                    j += 3;
-                    i += 4;
-                }) {
-                    const out_of_bounds = (i + 3 >= pix.len) or (j + 2 >= cdat.len);
-                    if (out_of_bounds) break;
-
-                    pix[i + 0] = cdat[j + 0]; // R
-                    pix[i + 1] = cdat[j + 1]; // G
-                    pix[i + 2] = cdat[j + 2]; // B
-                    pix[i + 3] = 0xFF; // A (fully opaque)
-                }
-
-                pixel_offset += rgba_img.stride;
-            },
-            .tc16 => {
-                for (0..width) |x| {
-                    const r_col = @as(u16, @intCast(cdat[x * 6 + 0])) << 8 | @as(u16, @intCast(cdat[x * 6 + 1]));
-                    const g_col = @as(u16, @intCast(cdat[x * 6 + 2])) << 8 | @as(u16, @intCast(cdat[x * 6 + 3]));
-                    const b_col = @as(u16, @intCast(cdat[x * 6 + 4])) << 8 | @as(u16, @intCast(cdat[x * 6 + 5]));
-                    rgba64.setRGBA64(@intCast(x), @intCast(y), .{ .r = r_col, .g = g_col, .b = b_col, .a = 0xFFFF });
-                }
-            },
             .g1 => {
-                var x: usize = 0;
-                while (x < width) : (x += 8) {
-                    var bit_index = cdat[x / 8];
-                    var x2: usize = 0;
-                    while (x2 < 8 and x + x2 < width) : (x2 += 1) {
-                        const bit_value = (bit_index >> 7) * 0xff;
-                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = (bit_value >> 7) * 0xff });
-                        bit_index <<= 1;
+                if (self.use_transparent) {
+                    const ty = self.transparent[1];
+                    var x: usize = 0;
+                    while (x < width) : (x += 8) {
+                        var bit_index = cdat[x / 8];
+                        var x2: usize = 0;
+                        while (x2 < 8 and x + x2 < width) : (x2 += 1) {
+                            const y_color = (bit_index >> 7) * 0xff;
+                            var a_color: u8 = 0xff;
+                            if (y_color == ty) {
+                                a_color = 0x00;
+                            }
+                            nrgba.setNRGBA(@intCast(x + x2), @intCast(y), .{ .r = y_color, .g = y_color, .b = y_color, .a = a_color });
+                            bit_index <<= 1;
+                        }
+                    }
+                } else {
+                    var x: usize = 0;
+                    while (x < width) : (x += 8) {
+                        var bit_index = cdat[x / 8];
+                        var x2: usize = 0;
+                        while (x2 < 8 and x + x2 < width) : (x2 += 1) {
+                            const bit_value = (bit_index >> 7) * 0xff;
+                            gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = (bit_value >> 7) * 0xff });
+                            bit_index <<= 1;
+                        }
                     }
                 }
             },
             .g2 => {
-                var x: usize = 0;
-                while (x < width) : (x += 4) {
-                    var bit_index = cdat[x / 4];
-                    var x2: usize = 0;
-                    while (x2 < 4 and x + x2 < width) : (x2 += 1) {
-                        const bit_value = (bit_index >> 6) * 0x55;
-                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
-                        bit_index <<= 2;
+                if (self.use_transparent) {
+                    const ty = self.transparent[1];
+                    var x: usize = 0;
+                    while (x < width) : (x += 4) {
+                        var bit_index = cdat[x / 4];
+                        var x2: usize = 0;
+                        while (x2 < 4 and x + x2 < width) : (x2 += 1) {
+                            const y_color = (bit_index >> 6) * 0x55;
+                            var a_color: u8 = 0xff;
+                            if (y_color == ty) {
+                                a_color = 0x00;
+                            }
+                            nrgba.setNRGBA(@intCast(x + x2), @intCast(y), .{ .r = y_color, .g = y_color, .b = y_color, .a = a_color });
+                            bit_index <<= 2;
+                        }
+                    }
+                } else {
+                    var x: usize = 0;
+                    while (x < width) : (x += 4) {
+                        var bit_index = cdat[x / 4];
+                        var x2: usize = 0;
+                        while (x2 < 4 and x + x2 < width) : (x2 += 1) {
+                            const bit_value = (bit_index >> 6) * 0x55;
+                            gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
+                            bit_index <<= 2;
+                        }
                     }
                 }
             },
             .g4 => {
-                var x: usize = 0;
-                while (x < width) : (x += 2) {
-                    var bit_index = cdat[x / 2];
-                    var x2: usize = 0;
-                    while (x2 < 2 and x + x2 < width) : (x2 += 1) {
-                        const bit_value = (bit_index >> 4) * 0x11;
-                        gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
-                        bit_index <<= 4;
+                if (self.use_transparent) {
+                    const ty = self.transparent[1];
+                    var x: usize = 0;
+                    while (x < width) : (x += 2) {
+                        var bit_index = cdat[x / 2];
+                        var x2: usize = 0;
+                        while (x2 < 2 and x + x2 < width) : (x2 += 1) {
+                            const y_color = (bit_index >> 4) * 0x11;
+                            var a_color: u8 = 0xff;
+                            if (y_color == ty) {
+                                a_color = 0x00;
+                            }
+                            nrgba.setNRGBA(@intCast(x + x2), @intCast(y), .{ .r = y_color, .g = y_color, .b = y_color, .a = a_color });
+                            bit_index <<= 4;
+                        }
+                    }
+                } else {
+                    var x: usize = 0;
+                    while (x < width) : (x += 2) {
+                        var bit_index = cdat[x / 2];
+                        var x2: usize = 0;
+                        while (x2 < 2 and x + x2 < width) : (x2 += 1) {
+                            const bit_value = (bit_index >> 4) * 0x11;
+                            gray.setGray(@intCast(x + x2), @intCast(y), .{ .y = bit_value });
+                            bit_index <<= 4;
+                        }
                     }
                 }
             },
             .g8 => {
-                @memcpy(gray.pixels[pixel_offset..][0..cdat.len], cdat);
-                pixel_offset += gray.stride;
+                if (self.use_transparent) {
+                    const ty = self.transparent[1];
+                    for (0..width) |x| {
+                        const y_color = cdat[x];
+                        var a_color: u8 = 0xff;
+                        if (y_color == ty) {
+                            a_color = 0x00;
+                        }
+                        nrgba.setNRGBA(@intCast(x), @intCast(y), .{ .r = y_color, .g = y_color, .b = y_color, .a = a_color });
+                    }
+                } else {
+                    @memcpy(gray.pixels[pixel_offset..][0..cdat.len], cdat);
+                    pixel_offset += gray.stride;
+                }
             },
             .g16 => {
-                for (0..width) |x| {
-                    const y_color = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[(x * 2) + 1]));
-                    gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_color });
+                if (self.use_transparent) {
+                    const ty = @as(u16, @intCast(self.transparent[0])) << 8 | @as(u16, @intCast(self.transparent[1]));
+                    for (0..width) |x| {
+                        const y_color = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[(x * 2) + 1]));
+                        var a_color: u16 = 0xffff;
+                        if (y_color == ty) {
+                            a_color = 0x0000;
+                        }
+                        nrgba64.setNRGBA64(@intCast(x), @intCast(y), .{ .r = y_color, .g = y_color, .b = y_color, .a = a_color });
+                    }
+                } else {
+                    for (0..width) |x| {
+                        const y_color = @as(u16, @intCast(cdat[x * 2])) << 8 | @as(u16, @intCast(cdat[(x * 2) + 1]));
+                        gray16.setGray16(@intCast(x), @intCast(y), .{ .y = y_color });
+                    }
+                }
+            },
+            .tc8 => {
+                if (self.use_transparent) {
+                    var pix = nrgba.pixels;
+                    var i = pixel_offset;
+                    var j: usize = 0;
+                    const tr = self.transparent[1];
+                    const tg = self.transparent[3];
+                    const tb = self.transparent[5];
+                    for (0..width) |_| {
+                        const r = cdat[j + 0];
+                        const g = cdat[j + 1];
+                        const b = cdat[j + 2];
+                        var a: u8 = 0xFF;
+                        if (r == tr and g == tg and b == tb) {
+                            a = 0x00;
+                        }
+                        pix[i + 0] = r;
+                        pix[i + 1] = g;
+                        pix[i + 2] = b;
+                        pix[i + 3] = a;
+                        i += 4;
+                        j += 3;
+                    }
+                    pixel_offset += nrgba.stride;
+                } else {
+                    const rgba_img = img.RGBA;
+                    // RGB to RGBA conversion
+                    const pix = rgba_img.pixels;
+                    var i: usize = pixel_offset;
+                    var j: usize = 0;
+
+                    while (j < cdat.len) : ({
+                        j += 3;
+                        i += 4;
+                    }) {
+                        const out_of_bounds = (i + 3 >= pix.len) or (j + 2 >= cdat.len);
+                        if (out_of_bounds) break;
+
+                        pix[i + 0] = cdat[j + 0]; // R
+                        pix[i + 1] = cdat[j + 1]; // G
+                        pix[i + 2] = cdat[j + 2]; // B
+                        pix[i + 3] = 0xFF; // A (fully opaque)
+                    }
+
+                    pixel_offset += rgba_img.stride;
+                }
+            },
+            .tc16 => {
+                if (self.use_transparent) {
+                    const tr = @as(u16, @intCast(self.transparent[0])) << 8 | @as(u16, @intCast(self.transparent[1]));
+                    const tg = @as(u16, @intCast(self.transparent[2])) << 8 | @as(u16, @intCast(self.transparent[3]));
+                    const tb = @as(u16, @intCast(self.transparent[4])) << 8 | @as(u16, @intCast(self.transparent[5]));
+                    for (0..width) |x| {
+                        const r_color = @as(u16, @intCast(cdat[x * 6 + 0])) << 8 | @as(u16, @intCast(cdat[x * 6 + 1]));
+                        const g_color = @as(u16, @intCast(cdat[x * 6 + 2])) << 8 | @as(u16, @intCast(cdat[x * 6 + 3]));
+                        const b_color = @as(u16, @intCast(cdat[x * 6 + 4])) << 8 | @as(u16, @intCast(cdat[x * 6 + 5]));
+                        var a_color: u16 = 0xffff;
+                        if (r_color == tr and g_color == tg and b_color == tb) {
+                            a_color = 0x0000;
+                        }
+                        nrgba64.setNRGBA64(@intCast(x), @intCast(y), .{ .r = r_color, .g = g_color, .b = b_color, .a = a_color });
+                    }
+                } else {
+                    for (0..width) |x| {
+                        const r_col = @as(u16, @intCast(cdat[x * 6 + 0])) << 8 | @as(u16, @intCast(cdat[x * 6 + 1]));
+                        const g_col = @as(u16, @intCast(cdat[x * 6 + 2])) << 8 | @as(u16, @intCast(cdat[x * 6 + 3]));
+                        const b_col = @as(u16, @intCast(cdat[x * 6 + 4])) << 8 | @as(u16, @intCast(cdat[x * 6 + 5]));
+                        rgba64.setRGBA64(@intCast(x), @intCast(y), .{ .r = r_col, .g = g_col, .b = b_col, .a = 0xFFFF });
+                    }
                 }
             },
             .ga8 => {
