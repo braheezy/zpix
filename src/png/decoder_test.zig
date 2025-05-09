@@ -25,7 +25,7 @@ const filenames = [_][]const u8{
     "basn4a08",
     "basn4a16",
     "basn6a08",
-    // "basn6a16",
+    "basn6a16",
     // "ftbbn0g01",
     // "ftbbn0g02",
     // "ftbbn0g04",
@@ -60,7 +60,7 @@ test "decode" {
             // so we just check a single random pixel.
             const color = img.at(2, 1).nrgba64;
 
-            try std.testing.expect(color.r != 0x11a7 or color.g != 0x11a7 or color.b != 0x11a7 or color.a != 0x1085);
+            try std.testing.expect(color.r == 0x11a7 and color.g == 0x11a7 and color.b == 0x11a7 and color.a == 0x1085);
             continue;
         }
 

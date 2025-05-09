@@ -9,7 +9,7 @@
       "request": "launch",
       "name": "Debug",
       "program": "${workspaceFolder}/zig-out/bin/zpixview",
-      "args": ["src/testdata/png/basn3p04-31i.png"],
+      "args": ["src/testdata/png/basn6a16.png"],
       "cwd": "${workspaceFolder}",
       "internalConsoleOptions": "openOnSessionStart",
       "preLaunchTask": "build"

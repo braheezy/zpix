@@ -417,7 +417,7 @@ pub const NRGBA64Image = struct {
     // the pixel at (x, y).
     pub fn pixOffset(self: NRGBA64Image, x: i32, y: i32) i32 {
         const i: i32 = @intCast(self.stride);
-        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 4;
+        return (y - self.rect.min.y) * i + (x - self.rect.min.x) * 8;
     }
 
     pub fn bounds(self: NRGBA64Image) Rectangle {
@@ -434,12 +434,12 @@ pub const NRGBA64Image = struct {
             return NRGBA64{};
         }
         const i: usize = @intCast(self.pixOffset(x, y));
-        const s = self.pixels[i .. i + 4];
+        const s = self.pixels[i .. i + 8];
         return NRGBA64{
-            .r = s[0],
-            .g = s[1],
-            .b = s[2],
-            .a = s[3],
+            .r = @as(u16, @intCast(s[0])) << 8 | @as(u16, @intCast(s[1])),
+            .g = @as(u16, @intCast(s[2])) << 8 | @as(u16, @intCast(s[3])),
+            .b = @as(u16, @intCast(s[4])) << 8 | @as(u16, @intCast(s[5])),
+            .a = @as(u16, @intCast(s[6])) << 8 | @as(u16, @intCast(s[7])),
         };
     }
 
