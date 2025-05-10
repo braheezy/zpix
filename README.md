@@ -9,7 +9,12 @@ Image decoding library in pure Zig. It supports:
 
 **PNG**
 
-- Basic truecolor, some gray
+- Gray 1, 2, 4, 8, and 16 bit
+- Gray + alpha 8 bit and 16 bit
+- Truecolor 8 bit and 16 bit
+- Truecolor + alpha, 8 bit and 16 bit
+- Paletted 1, 2, 4, and 8 bit
+- Interlaced
 
 Here's proof! The Mac image viewer on the left, and a SDL image viewer in Zig using `zpix` to view a JPEG file:
 ![demo](demo.png)
@@ -60,6 +65,4 @@ Run using `zig`:
 Or build and run:
 
     zig build
-    ./zig-out/bin/zjpeg <input jpeg>
-
----
+    ./zig-out/bin/zzpixview <input image>
