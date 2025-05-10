@@ -36,7 +36,7 @@ var fake_bkgds = std.StaticStringMap([]const u8).initComptime(.{
     .{ "ftbbn0g02", "bKGD {gray: 0;}\n" },
     .{ "ftbbn0g04", "bKGD {gray: 0;}\n" },
     .{ "ftbbn2c16", "bKGD {red: 0;  green: 0;  blue: 65535;}\n" },
-    .{ "ftbbn3p08", "bKGD {red: 0;  green: 0;  blue: 65535;}\n" },
+    .{ "ftbbn3p08", "bKGD {index: 245}\n" },
     .{ "ftbgn2c16", "bKGD {red: 0;  green: 65535;  blue: 0;}\n" },
     .{ "ftbgn3p08", "bKGD {index: 245}\n" },
     .{ "ftbrn2c08", "bKGD {red: 255;  green: 0;  blue: 0;}\n" },
@@ -61,13 +61,14 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     };
 
     const basename = std.fs.path.basename(filename);
-    try writer.print("#SNG: from {s}.png\nIHDR {{\n", .{basename});
+    try writer.print("#SNG: from {s}\nIHDR {{\n", .{basename});
     try writer.print(
         "    width: {d}; height: {d}; bitdepth: {d};\n",
         .{ bounds.dX(), bounds.dY(), bit_depth },
     );
 
-    if (fake_ihdr_usings.get(filename)) |using| {
+    const stem_name = std.fs.path.stem(filename);
+    if (fake_ihdr_usings.get(stem_name)) |using| {
         try writer.print("{s}", .{using});
     } else {
         switch (img) {
@@ -90,7 +91,7 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
     }
 
     try writer.print("}}\n", .{});
-    if (fake_gamas.get(filename)) |gama| {
+    if (fake_gamas.get(stem_name)) |gama| {
         try writer.print("{s}", .{gama});
     } else {
         try writer.print("gAMA {{1.0000}}\n", .{});
@@ -137,12 +138,13 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
 
             try writer.print("}}\n", .{});
 
-            if (fake_bkgds.get(basename)) |bkgd| {
+            if (fake_bkgds.get(stem_name)) |bkgd| {
                 try writer.print("{s}", .{bkgd});
             }
             if (last_alpha) |alpha| {
                 try writer.print("tRNS {{\n", .{});
-                for (0..alpha) |i| {
+                var i: usize = 0;
+                while (i <= alpha) : (i += 1) {
                     _, _, _, const color_alpha = p.palette[i].toRGBA();
                     const a = color_alpha >> 8;
                     try writer.print(" {d}", .{a});
@@ -151,8 +153,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
             }
         },
         else => {
-            if (std.mem.startsWith(u8, basename, "ft")) {
-                if (fake_bkgds.get(basename)) |bkgd| {
+            if (std.mem.startsWith(u8, stem_name, "ft")) {
+                if (fake_bkgds.get(stem_name)) |bkgd| {
                     try writer.print("{s}", .{bkgd});
                 }
                 // We fake a tRNS chunk. The test files' grayscale and truecolor
@@ -163,9 +165,9 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                         if (nrgba.a == 0) {
                             use_transparent = true;
                             try writer.print("tRNS {{\n", .{});
-                            if (std.mem.eql(u8, filename, "ftbbn0g01") or
-                                std.mem.eql(u8, filename, "ftbbn0g02") or
-                                std.mem.eql(u8, filename, "ftbbn0g04"))
+                            if (std.mem.eql(u8, stem_name, "ftbbn0g01") or
+                                std.mem.eql(u8, stem_name, "ftbbn0g02") or
+                                std.mem.eql(u8, stem_name, "ftbbn0g04"))
                             {
                                 // The standard image package doesn't have a "gray with
                                 // alpha" type. Instead, we use an image.NRGBA.
@@ -180,7 +182,7 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                         if (nrgba64.a == 0) {
                             use_transparent = true;
                             try writer.print("tRNS {{\n", .{});
-                            if (std.mem.eql(u8, filename, "ftbwn0g16")) {
+                            if (std.mem.eql(u8, stem_name, "ftbwn0g16")) {
                                 // The standard image package doesn't have a "gray16 with
                                 // alpha" type. Instead, we use an image.NRGBA64.
                                 try writer.print("    gray: {d};\n", .{nrgba64.r});
@@ -242,9 +244,9 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 for (0..dx) |x| {
                     const x_int: i32 = @intCast(x);
                     const color = img.at(x_int, y_int);
-                    if (std.mem.eql(u8, filename, "ftbbn0g01") or
-                        std.mem.eql(u8, filename, "ftbbn0g02") or
-                        std.mem.eql(u8, filename, "ftbbn0g04"))
+                    if (std.mem.eql(u8, stem_name, "ftbbn0g01") or
+                        std.mem.eql(u8, stem_name, "ftbbn0g02") or
+                        std.mem.eql(u8, stem_name, "ftbbn0g04"))
                     {
                         try writer.print("{x:02}", .{color.nrgba.r});
                     } else {
@@ -269,8 +271,8 @@ pub fn sng(writer: anytype, filename: []const u8, img: Image) !void {
                 for (0..dx) |x| {
                     const x_int: i32 = @intCast(x);
                     const color = img.at(x_int, y_int);
-                    if (std.mem.eql(u8, filename, "ftbwn0g16")) {
-                        try writer.print("{x:04}", .{color.nrgba.r});
+                    if (std.mem.eql(u8, stem_name, "ftbwn0g16")) {
+                        try writer.print("{x:04} ", .{color.nrgba64.r});
                     } else {
                         if (use_transparent) {
                             try writer.print("{x:04}{x:04}{x:04} ", .{

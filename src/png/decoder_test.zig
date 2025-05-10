@@ -21,7 +21,7 @@ const filenames = [_][]const u8{
     "basn3p04",
     "basn3p04-31i",
     "basn3p08",
-    // "basn3p08-trns",
+    "basn3p08-trns",
     "basn4a08",
     "basn4a16",
     "basn6a08",
@@ -30,17 +30,17 @@ const filenames = [_][]const u8{
     "ftbbn0g02",
     "ftbbn0g04",
     "ftbbn2c16",
-    // "ftbbn3p08",
-    // "ftbgn2c16",
-    // "ftbgn3p08",
+    "ftbbn3p08",
+    "ftbgn2c16",
+    "ftbgn3p08",
     "ftbrn2c08",
-    // "ftbwn0g16",
-    // "ftbwn3p08",
-    // "ftbyn3p08",
-    // "ftp0n0g08",
+    "ftbwn0g16",
+    "ftbwn3p08",
+    "ftbyn3p08",
+    "ftp0n0g08",
     "ftp0n2c08",
-    // "ftp0n3p08",
-    // "ftp1n3p08",
+    "ftp0n3p08",
+    "ftp1n3p08",
 };
 
 test "decode" {
@@ -70,7 +70,7 @@ test "decode" {
         const writer = output_stream.writer();
 
         // Generate SNG output
-        try sng(writer, filename, img);
+        try sng(writer, png_path, img);
         const written = output_stream.pos;
         const output_slice = output_buf[0..written];
 
@@ -91,9 +91,27 @@ test "decode" {
 
         while (true) {
             const output_line = output_lines.next();
-            const expected_line = expected_lines.next();
+            var expected_line = expected_lines.next();
 
             if (output_line == null and expected_line == null) break;
+
+            // Newer versions of the sng command line tool append an optional
+            // color name to the RGB tuple. For example:
+            // # rgb = (0xff,0xff,0xff) grey100
+            // # rgb = (0x00,0x00,0xff) blue1
+            // instead of the older version's plainer:
+            // # rgb = (0xff,0xff,0xff)
+            // # rgb = (0x00,0x00,0xff)
+            // We strip any such name.
+            if (std.mem.containsAtLeast(u8, expected_line.?, 1, "# rgb = (") and
+                !std.mem.endsWith(u8, expected_line.?, ")"))
+            {
+                const i = std.mem.lastIndexOf(u8, expected_line.?, ") ");
+                if (i) |index| {
+                    expected_line = expected_line.?[0 .. index + 1];
+                }
+            }
+
             if (output_line == null or expected_line == null) {
                 std.debug.print("Line count mismatch for {s}\n", .{filename});
                 return error.TestUnexpectedResult;
