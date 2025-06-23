@@ -7,6 +7,7 @@ const Color = color.Color;
 const Model = color.Model;
 const Gray = color.Gray;
 const Gray16 = color.Gray16;
+const RGBA = color.RGBA;
 const RGBA64 = color.RGBA64;
 const NRGBA = color.NRGBA;
 const NRGBA64 = color.NRGBA64;
@@ -173,35 +174,35 @@ pub const RGBAImage = struct {
     }
 
     pub fn at(self: RGBAImage, x: i32, y: i32) Color {
-        return self.rgbaAt(x, y);
+        return .{ .rgba = self.rgbaAt(x, y) };
     }
 
-    pub fn rgbaAt(self: RGBAImage, x: i32, y: i32) Color {
+    pub fn rgbaAt(self: RGBAImage, x: i32, y: i32) RGBA {
         const pt = Point{ .x = x, .y = y };
         if (!pt.In(self.rect)) {
-            return Color{ .rgba = .{} };
+            return RGBA{};
         }
         const i: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[i .. i + 4];
-        return Color.fromRGBA(
-            s[0],
-            s[1],
-            s[2],
-            s[3],
-        );
+        return .{
+            .r = s[0],
+            .g = s[1],
+            .b = s[2],
+            .a = s[3],
+        };
     }
 
-    pub fn setRGBA(self: RGBAImage, x: i32, y: i32, c: Color) void {
+    pub fn setRGBA(self: RGBAImage, x: i32, y: i32, c: RGBA) void {
         const point = Point{ .x = x, .y = y };
         if (!point.In(self.rect)) {
             return;
         }
         const pixel_index: usize = @intCast(self.pixOffset(x, y));
         const s = self.pixels[pixel_index..];
-        s[0] = c.rgba.r;
-        s[1] = c.rgba.g;
-        s[2] = c.rgba.b;
-        s[3] = c.rgba.a;
+        s[0] = c.r;
+        s[1] = c.g;
+        s[2] = c.b;
+        s[3] = c.a;
     }
 
     // Clear fills the entire image with the specified color

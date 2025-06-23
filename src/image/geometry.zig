@@ -16,12 +16,6 @@ pub const Rectangle = struct {
     min: Point,
     max: Point,
 
-    pub fn dX(self: Rectangle) i32 {
-        return self.max.x - self.min.x;
-    }
-    pub fn dY(self: Rectangle) i32 {
-        return self.max.y - self.min.y;
-    }
     pub fn init(x0: i32, y0: i32, x1: i32, y1: i32) Rectangle {
         const x_min = if (x0 > x1) x1 else x0;
         const x_max = if (x0 > x1) x0 else x1;
@@ -31,6 +25,19 @@ pub const Rectangle = struct {
         return Rectangle{
             .min = .{ .x = x_min, .y = y_min },
             .max = .{ .x = x_max, .y = y_max },
+        };
+    }
+
+    pub fn dX(self: Rectangle) i32 {
+        return self.max.x - self.min.x;
+    }
+    pub fn dY(self: Rectangle) i32 {
+        return self.max.y - self.min.y;
+    }
+    pub fn size(self: Rectangle) Point {
+        return Point{
+            .x = self.max.x - self.min.x,
+            .y = self.max.y - self.min.y,
         };
     }
     // Intersect returns the largest rectangle contained by both self and other. If the
