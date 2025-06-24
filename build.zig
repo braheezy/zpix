@@ -36,6 +36,14 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const qoi_mod = b.addModule("qoi", .{
+        .root_source_file = b.path("src/qoi/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    qoi_mod.addImport("image", image_mod);
+    qoi_mod.addImport("color", color_mod);
+
     // Add dependencies between modules
     image_mod.addImport("color", color_mod);
     jpeg_mod.addImport("image", image_mod);
@@ -47,6 +55,7 @@ pub fn build(b: *std.Build) !void {
     zpix_mod.addImport("image", image_mod);
     zpix_mod.addImport("jpeg", jpeg_mod);
     zpix_mod.addImport("png", png_mod);
+    zpix_mod.addImport("qoi", qoi_mod);
 
     // Tests
     const jpeg_tests = b.addTest(.{ .root_module = jpeg_mod });
@@ -60,6 +69,12 @@ pub fn build(b: *std.Build) !void {
 
     const test_step_png = b.step("test-png", "Run unit tests");
     test_step_png.dependOn(&run_png_tests.step);
+
+    const qoi_tests = b.addTest(.{ .root_module = qoi_mod });
+    const run_qoi_tests = b.addRunArtifact(qoi_tests);
+
+    const test_step_qoi = b.step("test-qoi", "Run unit tests");
+    test_step_qoi.dependOn(&run_qoi_tests.step);
 
     // Documentation
     const docs_lib = b.addStaticLibrary(.{

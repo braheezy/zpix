@@ -11,3 +11,6 @@ pub const jpeg = @import("jpeg");
 
 /// PNG support
 pub const png = @import("png");
+
+/// QOI (Quite OK Image) support
+pub const qoi = @import("qoi");
