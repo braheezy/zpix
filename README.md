@@ -16,6 +16,10 @@ Image decoding library in pure Zig. It supports:
 - Paletted 1, 2, 4, and 8 bit
 - Interlaced
 
+**QOI**
+
+- Encoding and decoding Quite OK Image (QOI) file format.
+
 Here's proof! The Mac image viewer on the left, and a SDL image viewer in Zig using `zpix` to view a JPEG file:
 ![demo](demo.png)
 
@@ -37,7 +41,11 @@ In your program, load an image file
 
 ```zig
 const jpeg = @import("jpeg");
+const png  = @import("png");
+const qoi  = @import("qoi");
 // or const jpeg = @import("zpix").jpeg;
+// or const png  = @import("zpix").png;
+// or const qoi  = @import("zpix").qoi;
 
 const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
     try jpeg.load(allocator, arg)
@@ -46,6 +54,11 @@ else if (std.mem.eql(u8, file_ext, ".png")) png: {
         std.process.exit(0);
     };
     break :png img;
+} else if (std.mem.eql(u8, file_ext, ".qoi")) qoi: {
+    const img = qoi.load(allocator, arg) catch {
+        std.process.exit(0);
+    };
+    break :qoi img;
 } else return error.UnsupportedFileExtension;
 
 defer {
@@ -54,7 +67,7 @@ defer {
 // Do something with pixels
 ```
 
-See [`examples/zpixview.zig`](./examples/zpixview.zig) for an example with SDL.
+See [`example/zpixview.zig`](./example/zpixview.zig) for an example with SDL.
 
 ## Development
 
@@ -65,4 +78,4 @@ Run using `zig`:
 Or build and run:
 
     zig build
-    ./zig-out/bin/zzpixview <input image>
+    ./zig-out/bin/zpixview <input image>

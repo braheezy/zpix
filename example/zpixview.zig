@@ -3,6 +3,7 @@ const builtin = std.builtin;
 const image = @import("zpix").image;
 const jpeg = @import("zpix").jpeg;
 const png = @import("zpix").png;
+const qoi = @import("zpix").qoi;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -53,6 +54,12 @@ pub fn main() !void {
                     std.process.exit(0);
                 };
                 break :png img;
+            } else if (std.mem.eql(u8, file_ext, ".qoi")) qoi: {
+                const img = qoi.load(allocator, arg) catch |err| {
+                    std.log.err("Error loading QOI file: {s}", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+                break :qoi img;
             } else return error.UnsupportedFileExtension;
 
             defer {

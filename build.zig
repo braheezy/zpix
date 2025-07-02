@@ -110,6 +110,25 @@ pub fn build(b: *std.Build) !void {
     });
     sng_exe.root_module.addImport("zpix", zpix_mod);
     b.installArtifact(sng_exe);
+
+    // Add convert executable
+    const convert_exe = b.addExecutable(.{
+        .name = "convert",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("example/convert.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    convert_exe.root_module.addImport("zpix", zpix_mod);
+    b.installArtifact(convert_exe);
+
+    const run_convert = b.addRunArtifact(convert_exe);
+    if (b.args) |args| {
+        run_convert.addArgs(args);
+    }
+    const convert_step = b.step("convert", "Run the convert program");
+    convert_step.dependOn(&run_convert.step);
 }
 
 fn buildExample(

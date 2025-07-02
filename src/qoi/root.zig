@@ -14,11 +14,12 @@ pub const Encoder = @import("encoder.zig");
 pub const encoder = Encoder;
 /// Encode pixel data into QOI format.
 pub const encode = Encoder.encode;
+pub const Desc = Encoder.Desc;
 
 /// Load and decode a QOI image from the file at `path`.
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        std.log.err("Failed to open qoi file {s}: {any}", .{path, err});
+        std.log.err("Failed to open qoi file {s}: {any}", .{ path, err });
         return err;
     };
     defer file.close();
