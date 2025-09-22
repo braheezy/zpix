@@ -1,4 +1,5 @@
 const std = @import("std");
+const zpix = @import("zpix");
 const image = @import("zpix").image;
 const jpeg = @import("zpix").jpeg;
 const png = @import("zpix").png;
@@ -50,16 +51,8 @@ pub fn main() !void {
         std.process.exit(64);
     }
 
-    // Load input image based on extension
-    const file_ext = std.fs.path.extension(input_file);
-    const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
-        try jpeg.load(allocator, input_file)
-    else if (std.mem.eql(u8, file_ext, ".png"))
-        try png.load(allocator, input_file)
-    else if (std.mem.eql(u8, file_ext, ".qoi"))
-        try qoi.load(allocator, input_file)
-    else
-        return error.UnsupportedFormat;
+    // Load input image using unified helper that probes formats
+    const img = try zpix.fromFilePath(allocator, input_file);
 
     defer img.free(allocator);
 

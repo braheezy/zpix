@@ -23,6 +23,23 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, buffer: []const u8) !image.I
     return try decode(allocator, reader);
 }
 
+/// Probe whether the provided memory buffer looks like a BMP file.
+pub fn probeBuffer(buffer: []const u8) bool {
+    // BMP signature is ASCII 'B''M'
+    return buffer.len >= 2 and buffer[0] == 'B' and buffer[1] == 'M';
+}
+
+/// Probe whether the file at `path` looks like a BMP file.
+pub fn probePath(path: []const u8) !bool {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return err;
+    };
+    defer file.close();
+    var buf: [2]u8 = undefined;
+    const n = try file.reader().read(&buf);
+    return n >= 2 and buf[0] == 'B' and buf[1] == 'M';
+}
+
 comptime {
     _ = @import("decoder_test.zig");
 }

@@ -35,3 +35,26 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, buffer: []const u8) !image.I
     const reader = buffer_reader.reader().any();
     return try decode(allocator, reader);
 }
+
+/// Probe whether the provided memory buffer looks like a QOI file.
+pub fn probeBuffer(buffer: []const u8) bool {
+    // QOI magic is 0x71 0x6F 0x69 0x66 ("qoif") at bytes 0..3
+    if (buffer.len < 4) return false;
+    const m0: u8 = 0x71; // 'q'
+    const m1: u8 = 0x6F; // 'o'
+    const m2: u8 = 0x69; // 'i'
+    const m3: u8 = 0x66; // 'f'
+    return buffer[0] == m0 and buffer[1] == m1 and buffer[2] == m2 and buffer[3] == m3;
+}
+
+/// Probe whether the file at `path` looks like a QOI file.
+pub fn probePath(path: []const u8) !bool {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return err;
+    };
+    defer file.close();
+    var buf: [4]u8 = undefined;
+    const n = try file.reader().read(&buf);
+    if (n < 4) return false;
+    return probeBuffer(buf[0..]);
+}

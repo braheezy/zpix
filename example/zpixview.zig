@@ -1,10 +1,7 @@
 const std = @import("std");
 const builtin = std.builtin;
+const zpix = @import("zpix");
 const image = @import("zpix").image;
-const jpeg = @import("zpix").jpeg;
-const png = @import("zpix").png;
-const qoi = @import("zpix").qoi;
-const bmp = @import("zpix").bmp;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -47,27 +44,10 @@ pub fn main() !void {
             try stdout.print(helpText, .{});
             std.process.exit(0);
         } else {
-            const file_ext = std.fs.path.extension(arg);
-            const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
-                try jpeg.load(allocator, arg)
-            else if (std.mem.eql(u8, file_ext, ".png")) png: {
-                const img = png.load(allocator, arg) catch {
-                    std.process.exit(0);
-                };
-                break :png img;
-            } else if (std.mem.eql(u8, file_ext, ".qoi")) qoi: {
-                const img = qoi.load(allocator, arg) catch |err| {
-                    std.log.err("Error loading QOI file: {s}", .{@errorName(err)});
-                    std.process.exit(1);
-                };
-                break :qoi img;
-            } else if (std.mem.eql(u8, file_ext, ".bmp")) bmp: {
-                const img = bmp.load(allocator, arg) catch |err| {
-                    std.log.err("Error loading BMP file: {s}", .{@errorName(err)});
-                    std.process.exit(1);
-                };
-                break :bmp img;
-            } else return error.UnsupportedFileExtension;
+            const img = zpix.fromFilePath(allocator, arg) catch |err| {
+                std.log.err("Error loading image: {s}", .{@errorName(err)});
+                std.process.exit(1);
+            };
 
             defer {
                 img.free(allocator);
