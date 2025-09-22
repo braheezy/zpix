@@ -44,6 +44,15 @@ pub fn build(b: *std.Build) !void {
     qoi_mod.addImport("image", image_mod);
     qoi_mod.addImport("color", color_mod);
 
+    const bmp_mod = b.addModule("bmp", .{
+        .root_source_file = b.path("src/bmp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bmp_mod.addImport("image", image_mod);
+    bmp_mod.addImport("color", color_mod);
+    bmp_mod.addImport("png", png_mod);
+
     // Add dependencies between modules
     image_mod.addImport("color", color_mod);
     jpeg_mod.addImport("image", image_mod);
@@ -56,19 +65,25 @@ pub fn build(b: *std.Build) !void {
     zpix_mod.addImport("jpeg", jpeg_mod);
     zpix_mod.addImport("png", png_mod);
     zpix_mod.addImport("qoi", qoi_mod);
+    zpix_mod.addImport("bmp", bmp_mod);
 
     // Tests
     const jpeg_tests = b.addTest(.{ .root_module = jpeg_mod });
     const png_tests = b.addTest(.{ .root_module = png_mod });
+    const bmp_tests = b.addTest(.{ .root_module = bmp_mod });
 
     const run_jpeg_tests = b.addRunArtifact(jpeg_tests);
     const run_png_tests = b.addRunArtifact(png_tests);
+    const run_bmp_tests = b.addRunArtifact(bmp_tests);
 
     const test_step_jpeg = b.step("test-jpeg", "Run unit tests");
     test_step_jpeg.dependOn(&run_jpeg_tests.step);
 
     const test_step_png = b.step("test-png", "Run unit tests");
     test_step_png.dependOn(&run_png_tests.step);
+
+    const test_step_bmp = b.step("test-bmp", "Run unit tests");
+    test_step_bmp.dependOn(&run_bmp_tests.step);
 
     const qoi_tests = b.addTest(.{ .root_module = qoi_mod });
     const run_qoi_tests = b.addRunArtifact(qoi_tests);

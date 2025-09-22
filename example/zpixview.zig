@@ -4,6 +4,7 @@ const image = @import("zpix").image;
 const jpeg = @import("zpix").jpeg;
 const png = @import("zpix").png;
 const qoi = @import("zpix").qoi;
+const bmp = @import("zpix").bmp;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -60,6 +61,12 @@ pub fn main() !void {
                     std.process.exit(1);
                 };
                 break :qoi img;
+            } else if (std.mem.eql(u8, file_ext, ".bmp")) bmp: {
+                const img = bmp.load(allocator, arg) catch |err| {
+                    std.log.err("Error loading BMP file: {s}", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+                break :bmp img;
             } else return error.UnsupportedFileExtension;
 
             defer {
@@ -84,7 +91,7 @@ fn draw(al: std.mem.Allocator, file_name: []const u8, img: image.Image) !void {
     const desired_window_height = 300;
     const scale_factor = @min(@as(f32, @floatFromInt(width)) / desired_window_width, @as(f32, @floatFromInt(height)) / desired_window_height);
 
-    const window_title = try std.fmt.allocPrintZ(al, "zjpeg view - {s}", .{file_name});
+    const window_title = try std.fmt.allocPrintZ(al, "zpixview - {s}", .{file_name});
     defer al.free(window_title);
 
     // Ensure scale_factor is not too small to avoid division issues
