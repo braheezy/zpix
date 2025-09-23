@@ -3,7 +3,7 @@
 
     .version = "0.2.0",
     .fingerprint = 0x9bd6de54c0db0d3a,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
 
     .dependencies = .{
         .SDL = .{

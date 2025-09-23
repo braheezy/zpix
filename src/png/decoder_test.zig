@@ -50,7 +50,7 @@ test "decode" {
         const png_path = std.fmt.allocPrint(allocator, "src/testdata/png/{s}.png", .{filename}) catch unreachable;
         defer allocator.free(png_path);
         const img = load(allocator, png_path) catch |err| {
-            std.log.err("Failed to load {s}: {!}", .{ png_path, err });
+            std.log.err("Failed to load {s}: {t}", .{ png_path, err });
             std.process.exit(0);
         };
         defer img.free(allocator);
@@ -81,9 +81,12 @@ test "decode" {
         const expected_file = try std.fs.cwd().openFile(sng_path, .{});
         defer expected_file.close();
 
-        var expected_buf = std.ArrayList(u8).init(allocator);
-        defer expected_buf.deinit();
-        try expected_file.reader().readAllArrayList(&expected_buf, 0x10000);
+        var expected_buf = std.ArrayListUnmanaged(u8){};
+        defer expected_buf.deinit(allocator);
+        var io_buf: [1024]u8 = undefined;
+        var file_reader = expected_file.reader(&io_buf);
+        const reader: *std.Io.Reader = &file_reader.interface;
+        try reader.appendRemaining(allocator, &expected_buf, @enumFromInt(0x10000));
 
         // Compare line by line
         var output_lines = std.mem.splitSequence(u8, output_slice, "\n");

@@ -23,7 +23,9 @@ pub fn main() !void {
         }
     }
 
-    const stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout: *std.Io.Writer = &stdout_writer.interface;
 
     // Read arguments
     const args = try std.process.argsAlloc(allocator);
@@ -31,13 +33,15 @@ pub fn main() !void {
 
     if (args.len < 3) {
         try stdout.print("Error: Missing input or output file\n{s}", .{helpText});
+        try stdout.flush();
         std.process.exit(64);
     }
 
     // handle CLI arguments
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try stdout.print(helpText, .{});
+            try stdout.print("{s}", .{helpText});
+            try stdout.flush();
             std.process.exit(0);
         }
     }
@@ -78,4 +82,5 @@ pub fn main() !void {
     try file.writeAll(encoded);
 
     std.log.info("Successfully converted {s} to {s}", .{ input_file, output_file });
+    try stdout.flush();
 }

@@ -91,18 +91,16 @@ pub fn build(b: *std.Build) !void {
     const test_step_qoi = b.step("test-qoi", "Run unit tests");
     test_step_qoi.dependOn(&run_qoi_tests.step);
 
-    // Documentation
-    const docs_lib = b.addStaticLibrary(.{
-        .name = "zpix",
+    // Documentation step: generate docs via a thin library artifact
+    const docs_lib = b.addLibrary(.{
+        .name = "zpix-docs",
         .root_module = zpix_mod,
     });
-
     const install_docs = b.addInstallDirectory(.{
         .source_dir = docs_lib.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
-
     const docs_step = b.step("docs", "Copy documentation artifacts to prefix path");
     docs_step.dependOn(&install_docs.step);
 
@@ -111,9 +109,8 @@ pub fn build(b: *std.Build) !void {
     const serve_run = b.addSystemCommand(&a3);
     serve_step.dependOn(&serve_run.step);
 
-    // Example builds
-    const exe = try buildExample(b, optimize, target);
-    exe.root_module.addImport("zpix", zpix_mod);
+    // Example builds (zpixview requires SDL; disable by default for 0.15.1 tests)
+    // To build zpixview manually, run the 'zpixview' step defined by buildExample().
 
     const sng_exe = b.addExecutable(.{
         .name = "sng",

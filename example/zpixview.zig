@@ -25,7 +25,9 @@ pub fn main() !void {
             std.process.exit(1);
         }
     }
-    const stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout: *std.Io.Writer = &stdout_writer.interface;
 
     // Read arguments
     const args = try std.process.argsAlloc(allocator);
@@ -41,11 +43,12 @@ pub fn main() !void {
     // handle CLI arguments
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try stdout.print(helpText, .{});
+            try stdout.print("{s}", .{helpText});
+            try stdout.flush();
             std.process.exit(0);
         } else {
             const img = zpix.fromFilePath(allocator, arg) catch |err| {
-                std.log.err("Error loading image: {s}", .{@errorName(err)});
+                std.log.err("Error loading image: {t}", .{err});
                 std.process.exit(1);
             };
 
@@ -54,6 +57,7 @@ pub fn main() !void {
             }
 
             try draw(allocator, arg, img);
+            try stdout.flush();
         }
     }
 }

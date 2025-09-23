@@ -12,14 +12,15 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
     };
     defer file.close();
 
-    var buffered = std.io.bufferedReader(file.reader());
-    const reader = buffered.reader().any();
+    var read_buffer: [4096]u8 = undefined;
+    var file_reader = file.reader(&read_buffer);
+    const reader: *std.Io.Reader = &file_reader.interface;
     return try decode(allocator, reader);
 }
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, buffer: []const u8) !image.Image {
-    var buffer_reader = std.io.fixedBufferStream(buffer);
-    const reader = buffer_reader.reader().any();
+    var fixed_reader = std.Io.Reader.fixed(buffer);
+    const reader: *std.Io.Reader = &fixed_reader;
     return try decode(allocator, reader);
 }
 
@@ -36,7 +37,10 @@ pub fn probePath(path: []const u8) !bool {
     };
     defer file.close();
     var buf: [2]u8 = undefined;
-    const n = try file.reader().read(&buf);
+    var io_buf: [32]u8 = undefined;
+    var file_reader = file.reader(&io_buf);
+    const reader: *std.Io.Reader = &file_reader.interface;
+    const n = try reader.readSliceShort(&buf);
     return n >= 2 and buf[0] == 'B' and buf[1] == 'M';
 }
 

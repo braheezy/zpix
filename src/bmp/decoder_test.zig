@@ -45,13 +45,13 @@ test "bmp: decode parity with png" {
         defer al.free(bmp_path);
 
         const img_png = png.load(al, png_path) catch |err| {
-            std.debug.print("failed to load png {s}: {any}\n", .{ png_path, err });
+            std.debug.print("failed to load png {s}: {t}\n", .{ png_path, err });
             return err;
         };
         defer img_png.free(al);
 
         const img_bmp = bmp.load(al, bmp_path) catch |err| {
-            std.debug.print("failed to load bmp {s}: {any}\n", .{ bmp_path, err });
+            std.debug.print("failed to load bmp {s}: {t}\n", .{ bmp_path, err });
             return err;
         };
         defer img_bmp.free(al);
@@ -62,8 +62,8 @@ test "bmp: decode parity with png" {
 
 test "bmp: empty input returns eof" {
     // Decode from empty buffer should error.
-    var stream = std.io.fixedBufferStream(&[_]u8{});
-    const reader = stream.reader().any();
+    var reader_val = std.Io.Reader.fixed(&[_]u8{});
+    const reader: *std.Io.Reader = &reader_val;
     const res = bmp.Decoder.decode(testing.allocator, reader);
     try testing.expectError(error.EndOfStream, res);
 }

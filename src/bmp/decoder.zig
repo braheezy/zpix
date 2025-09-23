@@ -7,7 +7,7 @@ pub const Decoder = @This();
 // Memory allocator
 allocator: std.mem.Allocator,
 // Reader for BMP data
-r: std.io.AnyReader,
+r: *std.Io.Reader,
 
 // Parsed config
 width: u32 = 0,
@@ -22,7 +22,7 @@ const info_header_len: usize = 40;
 const v4_info_header_len: usize = 108;
 const v5_info_header_len: usize = 124;
 
-pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+pub fn decode(allocator: std.mem.Allocator, r: *std.Io.Reader) !image.Image {
     var d = Decoder{
         .allocator = allocator,
         .r = r,
@@ -44,7 +44,7 @@ fn readHeader(self: *Decoder, out_offset: *u32) !void {
     var b: [1024]u8 = undefined;
 
     // Read file header prefix: 14 (file) + 4 (first 4 bytes of info header)
-    try self.r.readNoEof(b[0 .. file_header_len + 4]);
+    try self.r.readSliceAll(b[0 .. file_header_len + 4]);
     if (!(b[0] == 'B' and b[1] == 'M')) {
         return error.InvalidSignature;
     }
@@ -56,7 +56,7 @@ fn readHeader(self: *Decoder, out_offset: *u32) !void {
     }
 
     // Read remaining info header bytes
-    try self.r.readNoEof(b[file_header_len + 4 .. file_header_len + info_len]);
+    try self.r.readSliceAll(b[file_header_len + 4 .. file_header_len + info_len]);
 
     const width_i32 = @as(i32, @bitCast(readU32LE(b[18..22])));
     const height_i32 = @as(i32, @bitCast(readU32LE(b[22..26])));
@@ -123,7 +123,7 @@ fn readHeader(self: *Decoder, out_offset: *u32) !void {
                 if (chunk > 4) {
                     chunk -= chunk % 4;
                 }
-                try self.r.readNoEof(b[0..chunk]);
+                try self.r.readSliceAll(b[0..chunk]);
                 // process this chunk in 4-byte steps
                 var i: usize = 0;
                 while (i < chunk) : (i += 4) {
@@ -200,7 +200,7 @@ fn decodePaletted(self: *Decoder) !image.Image {
 
     var y: i32 = y0;
     while (y != y1) : (y += y_delta) {
-        try self.r.readNoEof(rowbuf);
+        try self.r.readSliceAll(rowbuf);
         const stride: usize = paletted.stride;
         var p = paletted.pixels[@as(usize, @intCast(y)) * stride ..];
         // We only care about the first 'width' pixels
@@ -251,7 +251,7 @@ fn decodeRGB(self: *Decoder) !image.Image {
 
     var y: i32 = y0;
     while (y != y1) : (y += y_delta) {
-        try self.r.readNoEof(rowbuf);
+        try self.r.readSliceAll(rowbuf);
         var p = rgba.pixels[@as(usize, @intCast(y)) * rgba.stride ..][0 .. width * 4];
         var i: usize = 0;
         var j: usize = 0;
@@ -289,7 +289,7 @@ fn decodeNRGBA(self: *Decoder) !image.Image {
     var y: i32 = y0;
     while (y != y1) : (y += y_delta) {
         var p = nrgba.pixels[@as(usize, @intCast(y)) * nrgba.stride ..][0 .. width * 4];
-        try self.r.readNoEof(p);
+        try self.r.readSliceAll(p);
         var idx: usize = 0;
         while (idx < p.len) : (idx += 4) {
             // Swap B and R (BGRA -> RGBA)

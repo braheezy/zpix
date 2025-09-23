@@ -4,6 +4,7 @@ const image = @import("image");
 pub const Decoder = @import("decoder.zig");
 
 pub const decode = Decoder.decode;
+pub const DecoderType = Decoder;
 pub const sng = @import("sng.zig").sng;
 
 // PNG 8-byte signature
@@ -16,8 +17,9 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
     };
     defer png_file.close();
 
-    var bufferedReader = std.io.bufferedReader(png_file.reader());
-    const reader = bufferedReader.reader().any();
+    var read_buffer: [4096]u8 = undefined;
+    var file_reader = png_file.reader(&read_buffer);
+    const reader: *std.Io.Reader = &file_reader.interface;
 
     const img = try decode(allocator, reader);
 
@@ -26,8 +28,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !image.Image {
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, buffer: []const u8) !image.Image {
     // create a buffer reader from the buffer
-    var buffer_reader = std.io.fixedBufferStream(buffer);
-    const reader = buffer_reader.reader().any();
+    var fixed_reader = std.Io.Reader.fixed(buffer);
+    const reader: *std.Io.Reader = &fixed_reader;
     return try decode(allocator, reader);
 }
 
@@ -42,8 +44,11 @@ pub fn probePath(path: []const u8) !bool {
         return err;
     };
     defer file.close();
+    var io_buf: [64]u8 = undefined;
+    var file_reader = file.reader(&io_buf);
+    const reader: *std.Io.Reader = &file_reader.interface;
     var buf: [8]u8 = undefined;
-    const n = try file.reader().read(&buf);
+    const n = try reader.readSliceShort(&buf);
     return n >= 8 and std.mem.eql(u8, buf[0..8], png_signature);
 }
 
