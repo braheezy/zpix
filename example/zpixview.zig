@@ -1,10 +1,7 @@
 const std = @import("std");
 const builtin = std.builtin;
+const zpix = @import("zpix");
 const image = @import("zpix").image;
-const jpeg = @import("zpix").jpeg;
-const png = @import("zpix").png;
-const qoi = @import("zpix").qoi;
-const bmp = @import("zpix").bmp;
 
 const sdl = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -28,7 +25,9 @@ pub fn main() !void {
             std.process.exit(1);
         }
     }
-    const stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout: *std.Io.Writer = &stdout_writer.interface;
 
     // Read arguments
     const args = try std.process.argsAlloc(allocator);
@@ -44,36 +43,21 @@ pub fn main() !void {
     // handle CLI arguments
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try stdout.print(helpText, .{});
+            try stdout.print("{s}", .{helpText});
+            try stdout.flush();
             std.process.exit(0);
         } else {
-            const file_ext = std.fs.path.extension(arg);
-            const img = if (std.mem.eql(u8, file_ext, ".jpg") or std.mem.eql(u8, file_ext, ".jpeg"))
-                try jpeg.load(allocator, arg)
-            else if (std.mem.eql(u8, file_ext, ".png")) png: {
-                const img = png.load(allocator, arg) catch {
-                    std.process.exit(0);
-                };
-                break :png img;
-            } else if (std.mem.eql(u8, file_ext, ".qoi")) qoi: {
-                const img = qoi.load(allocator, arg) catch |err| {
-                    std.log.err("Error loading QOI file: {s}", .{@errorName(err)});
-                    std.process.exit(1);
-                };
-                break :qoi img;
-            } else if (std.mem.eql(u8, file_ext, ".bmp")) bmp: {
-                const img = bmp.load(allocator, arg) catch |err| {
-                    std.log.err("Error loading BMP file: {s}", .{@errorName(err)});
-                    std.process.exit(1);
-                };
-                break :bmp img;
-            } else return error.UnsupportedFileExtension;
+            const img = zpix.fromFilePath(allocator, arg) catch |err| {
+                std.log.err("Error loading image: {t}", .{err});
+                std.process.exit(1);
+            };
 
             defer {
                 img.free(allocator);
             }
 
             try draw(allocator, arg, img);
+            try stdout.flush();
         }
     }
 }

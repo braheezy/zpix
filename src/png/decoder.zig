@@ -121,8 +121,8 @@ pub const Decoder = @This();
 
 // memory allocator
 allocator: std.mem.Allocator,
-// reader into provided PNG data
-r: std.io.AnyReader,
+// reader into provided PNG data (new std.Io API)
+r: *std.Io.Reader,
 img: image.Image = undefined,
 width: u32 = 0,
 height: u32 = 0,
@@ -140,7 +140,7 @@ use_transparent: bool = false,
 transparent: [6]u8 = [_]u8{0} ** 6,
 scratch: [3 * 256]u8 = [_]u8{0} ** (3 * 256),
 
-pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+pub fn decode(allocator: std.mem.Allocator, r: *std.Io.Reader) !image.Image {
     // We may do some allocations for some images that are easier to clean up if an arena is used.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -221,7 +221,7 @@ pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
 }
 
 fn checkHeader(self: *Decoder) !void {
-    try self.r.readNoEof(self.scratch[0..png_header.len]);
+    try self.r.readSliceAll(self.scratch[0..png_header.len]);
 
     if (!std.mem.eql(u8, self.scratch[0..png_header.len], png_header)) {
         return error.InvalidPngHeader;
@@ -328,8 +328,9 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
         return error.InvalidIHDRLength;
     }
 
-    const bytes = try self.r.readBytesNoEof(13);
-    self.crc.update(&bytes);
+    try self.r.readSliceAll(self.scratch[0..13]);
+    const bytes = self.scratch[0..13];
+    self.crc.update(bytes);
     if (bytes[10] != 0) {
         return error.UnsupportedCompressionMethod;
     }
@@ -402,8 +403,8 @@ fn parseIhdr(self: *Decoder, length: u32) !void {
 // Process all consecutive IDAT chunks and decode the image
 fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
     // Collect all IDAT chunks
-    var all_data = std.ArrayList(u8).init(self.allocator);
-    defer all_data.deinit();
+    var all_data = std.ArrayListUnmanaged(u8){};
+    defer all_data.deinit(self.allocator);
 
     // Read the first IDAT chunk data and add it to our buffer
     if (first_chunk_length > 0) {
@@ -411,10 +412,10 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
         var remaining = first_chunk_length;
         while (remaining > 0) {
             const bytes_to_read = @min(remaining, self.scratch.len);
-            try self.r.readNoEof(self.scratch[0..bytes_to_read]);
+            try self.r.readSliceAll(self.scratch[0..bytes_to_read]);
 
             // Add to our collected data
-            try all_data.appendSlice(self.scratch[0..bytes_to_read]);
+            try all_data.appendSlice(self.allocator, self.scratch[0..bytes_to_read]);
 
             self.crc.update(self.scratch[0..bytes_to_read]);
             remaining -= bytes_to_read;
@@ -431,7 +432,7 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
     while (true) {
         // Try to read the next chunk header
         var header_buf: [8]u8 = undefined;
-        self.r.readNoEof(&header_buf) catch |err| {
+        self.r.readSliceAll(&header_buf) catch |err| {
             std.log.info("[zpix] png: Error reading next chunk header: {any}", .{err});
             break;
         };
@@ -492,11 +493,11 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
             var remaining = chunk_length;
             while (remaining > 0) {
                 const bytes_to_read = @min(remaining, self.scratch.len);
-                try self.r.readNoEof(self.scratch[0..bytes_to_read]);
+                try self.r.readSliceAll(self.scratch[0..bytes_to_read]);
                 self.crc.update(self.scratch[0..bytes_to_read]);
 
                 // Add to our collected data
-                try all_data.appendSlice(self.scratch[0..bytes_to_read]);
+                try all_data.appendSlice(self.allocator, self.scratch[0..bytes_to_read]);
 
                 remaining -= bytes_to_read;
             }
@@ -508,24 +509,26 @@ fn parseIdat(self: *Decoder, first_chunk_length: u32) !void {
 
     // Now we can decompress and process the data
     if (all_data.items.len > 0) {
-        // Create fixed buffer stream from our collected data
-        var data_stream = std.io.fixedBufferStream(all_data.items);
-
-        // Create a decompressor for the zlib stream
-        var decompress_stream = std.compress.zlib.decompressor(data_stream.reader());
+        // Create a fixed reader from our collected data
+        const data_slice = all_data.items;
+        var data_reader_val = std.Io.Reader.fixed(data_slice);
+        // Create a decompressor for the zlib stream (flate with .zlib container)
+        var decomp_buf: [std.compress.flate.max_window_len]u8 = undefined;
+        var decompress: std.compress.flate.Decompress = .init(&data_reader_val, .zlib, &decomp_buf);
+        const decomp_reader: *std.Io.Reader = &decompress.reader;
 
         // Decode the image based on interlace type, similar to Go's implementation
         if (self.interlace == .none) {
             // Non-interlaced image: just read the image in a single pass
-            self.img = try self.readImagePass(decompress_stream.reader(), 0, false);
+            self.img = try self.readImagePass(decomp_reader, 0, false);
         } else if (self.interlace == .adam7) {
             // Interlaced image: allocate the full image first
-            self.img = try self.readImagePass(decompress_stream.reader(), 0, true);
+            self.img = try self.readImagePass(decomp_reader, 0, true);
 
             // Then read each of the 7 passes
             for (0..7) |p| {
                 const pass: u8 = @intCast(p);
-                const pass_img = self.readImagePass(decompress_stream.reader(), pass, false) catch |err| {
+                const pass_img = self.readImagePass(decomp_reader, pass, false) catch |err| {
                     if (err == error.EmptyPass) {
                         // Skip empty passes
                         continue;
@@ -547,7 +550,7 @@ fn parseTrns(self: *Decoder, length: u32) !void {
             if (length != 2) {
                 return error.BadTrnsLength;
             }
-            try self.r.readNoEof(self.scratch[0..length]);
+            try self.r.readSliceAll(self.scratch[0..length]);
             self.crc.update(self.scratch[0..length]);
 
             const copy_len = @min(length, 6);
@@ -564,7 +567,7 @@ fn parseTrns(self: *Decoder, length: u32) !void {
             if (length != 6) {
                 return error.BadTrnsLength;
             }
-            try self.r.readNoEof(self.scratch[0..length]);
+            try self.r.readSliceAll(self.scratch[0..length]);
             self.crc.update(self.scratch[0..length]);
 
             const copy_len = @min(length, 6);
@@ -575,7 +578,7 @@ fn parseTrns(self: *Decoder, length: u32) !void {
             if (length > 256) {
                 return error.BadTrnsLength;
             }
-            try self.r.readNoEof(self.scratch[0..length]);
+            try self.r.readSliceAll(self.scratch[0..length]);
             self.crc.update(self.scratch[0..length]);
 
             if (self.palette.?.len < length) {
@@ -604,7 +607,7 @@ fn parsePlte(self: *Decoder, length: u32) !void {
         return error.BadPlteLength;
     }
 
-    try self.r.readNoEof(self.scratch[0 .. num_palettes * 3]);
+    try self.r.readSliceAll(self.scratch[0 .. num_palettes * 3]);
     self.crc.update(self.scratch[0 .. num_palettes * 3]);
 
     switch (self.color_depth) {
@@ -645,7 +648,7 @@ fn parsePlte(self: *Decoder, length: u32) !void {
 // readImagePass reads a single image pass, sized according to the pass number.
 fn readImagePass(
     self: *Decoder,
-    reader: anytype,
+    reader: *std.Io.Reader,
     pass: u8,
     allocate_only: bool,
 ) !image.Image {
@@ -794,10 +797,7 @@ fn readImagePass(
 
     for (0..height) |y| {
         // Read a row of data with filter byte
-        const bytes_read = try reader.readAll(cr);
-        if (bytes_read != row_size) {
-            return error.IncompleteRowData;
-        }
+        try reader.readSliceAll(cr);
 
         // Apply filter
         const cdat = cr[1..]; // Skip the filter byte
@@ -1189,7 +1189,7 @@ fn skipChunk(self: *Decoder, length: u32) !void {
 
     while (remaining > 0) {
         const to_read = @min(remaining, buf_size);
-        try self.r.readNoEof(self.scratch[0..to_read]);
+        try self.r.readSliceAll(self.scratch[0..to_read]);
         self.crc.update(self.scratch[0..to_read]);
         remaining -= to_read;
     }
@@ -1205,7 +1205,7 @@ const ChunkHeader = struct {
 fn readChunkHeader(self: *Decoder) !ChunkHeader {
     var header: ChunkHeader = undefined;
 
-    try self.r.readNoEof(self.scratch[0..8]);
+    try self.r.readSliceAll(self.scratch[0..8]);
 
     header.length = std.mem.readInt(u32, self.scratch[0..4], .big);
 
@@ -1264,12 +1264,7 @@ const ChunkType = enum(u32) {
 pub fn verifyChecksum(self: *Decoder) !void {
     // Read the 4-byte CRC from the file
     var crc_bytes: [4]u8 = undefined;
-    const bytes_read = try self.r.readAll(&crc_bytes);
-
-    if (bytes_read != 4) {
-        std.log.info("[zpix] png: WARNING: Could only read {d} bytes for CRC", .{bytes_read});
-        return error.IncompleteCrc;
-    }
+    try self.r.readSliceAll(&crc_bytes);
 
     // Get the expected CRC value (big endian)
     const expected_crc = std.mem.readInt(u32, &crc_bytes, .big);

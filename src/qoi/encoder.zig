@@ -41,9 +41,9 @@ pub fn encode(
     const maxSize =
         @as(usize, desc.width) * @as(usize, desc.height) * @as(usize, desc.channels + 1) + QOI_HEADER_SIZE + QOI_PADDING_SIZE;
 
-    var list = std.ArrayList(u8).init(allocator);
-    defer list.deinit();
-    try list.ensureTotalCapacity(maxSize);
+    var list = std.ArrayListUnmanaged(u8){};
+    defer list.deinit(allocator);
+    try list.ensureTotalCapacity(allocator, maxSize);
 
     // Write header
     var header: [QOI_HEADER_SIZE]u8 = undefined;
@@ -58,7 +58,7 @@ pub fn encode(
     hp += 1;
     header[hp] = desc.colorspace;
     hp += 1;
-    try list.appendSlice(header[0..hp]);
+    try list.appendSlice(allocator, header[0..hp]);
 
     // Initialize the QOI index array to zeroed RGBA slots.
     var index: [64]RGBA = std.mem.zeroes([64]RGBA);
@@ -77,20 +77,20 @@ pub fn encode(
             run += 1;
             if (run == 62 or pxi + desc.channels == pxLen) {
                 const run_minus: u8 = @truncate(run - 1);
-                try list.append(QOI_OP_RUN | run_minus);
+                try list.append(allocator, QOI_OP_RUN | run_minus);
                 run = 0;
             }
         } else {
             if (run > 0) {
                 const run_minus: u8 = @truncate(run - 1);
-                try list.append(QOI_OP_RUN | run_minus);
+                try list.append(allocator, QOI_OP_RUN | run_minus);
                 run = 0;
             }
 
             const idx = indexPos(px);
             if (index[idx].r == px.r and index[idx].g == px.g and index[idx].b == px.b and index[idx].a == px.a) {
                 const idx_u: u8 = @bitCast(@as(u8, @intCast(idx)));
-                try list.append(QOI_OP_INDEX | idx_u);
+                try list.append(allocator, QOI_OP_INDEX | idx_u);
             } else {
                 index[idx] = px;
                 if (px.a == px_prev.a) {
@@ -100,23 +100,23 @@ pub fn encode(
                     const vg_r = vr - vg;
                     const vg_b = vb - vg;
                     if (vr > -3 and vr < 2 and vg > -3 and vg < 2 and vb > -3 and vb < 2) {
-                        try list.append(QOI_OP_DIFF |
+                        try list.append(allocator, QOI_OP_DIFF |
                             @as(u8, @intCast(((vr + 2) << 4) | ((vg + 2) << 2) | (vb + 2))));
                     } else if (vg_r > -9 and vg_r < 8 and vg > -33 and vg < 32 and vg_b > -9 and vg_b < 8) {
-                        try list.append(QOI_OP_LUMA | @as(u8, @intCast(vg + 32)));
-                        try list.append(@as(u8, @intCast(((vg_r + 8) << 4) | (vg_b + 8))));
+                        try list.append(allocator, QOI_OP_LUMA | @as(u8, @intCast(vg + 32)));
+                        try list.append(allocator, @as(u8, @intCast(((vg_r + 8) << 4) | (vg_b + 8))));
                     } else {
-                        try list.append(QOI_OP_RGB);
-                        try list.append(px.r);
-                        try list.append(px.g);
-                        try list.append(px.b);
+                        try list.append(allocator, QOI_OP_RGB);
+                        try list.append(allocator, px.r);
+                        try list.append(allocator, px.g);
+                        try list.append(allocator, px.b);
                     }
                 } else {
-                    try list.append(QOI_OP_RGBA);
-                    try list.append(px.r);
-                    try list.append(px.g);
-                    try list.append(px.b);
-                    try list.append(px.a);
+                    try list.append(allocator, QOI_OP_RGBA);
+                    try list.append(allocator, px.r);
+                    try list.append(allocator, px.g);
+                    try list.append(allocator, px.b);
+                    try list.append(allocator, px.a);
                 }
             }
         }
@@ -125,10 +125,10 @@ pub fn encode(
 
     // End marker
     for (QOI_PADDING) |b| {
-        try list.append(b);
+        try list.append(allocator, b);
     }
 
-    return list.toOwnedSlice();
+    return list.toOwnedSlice(allocator);
 }
 
 fn writeBE32(buf: []u8, v: u32) void {

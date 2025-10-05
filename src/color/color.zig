@@ -158,7 +158,7 @@ pub const Color = union(enum) {
 
 /// Model can convert any [Color] to one from its own color model. The conversion
 /// may be lossy.
-const Model = union(enum) {
+pub const Model = union(enum) {
     RGB: void,
     YCbCr: void,
     RGBA: void,

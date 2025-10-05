@@ -17,21 +17,26 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var filename: ?[]const u8 = null;
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout: *std.Io.Writer = &stdout_writer.interface;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try std.io.getStdOut().writer().print("Usage: sng <filename>\n", .{});
+            try stdout.print("Usage: sng <filename>\n", .{});
+            try stdout.flush();
             std.process.exit(0);
         } else {
             filename = arg;
         }
     }
     if (filename == null) {
-        try std.io.getStdOut().writer().print("Usage: sng <filename>\n", .{});
+        try stdout.print("Usage: sng <filename>\n", .{});
+        try stdout.flush();
         std.process.exit(0);
     }
 
     const img = try load(allocator, filename.?);
     defer img.free(allocator);
-    const stdout = std.io.getStdOut().writer();
     try sng(stdout, filename.?, img);
+    try stdout.flush();
 }

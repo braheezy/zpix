@@ -98,8 +98,8 @@ const Bits = struct {
 
 // memory allocator
 al: std.mem.Allocator,
-// reader into provided JPEG data
-r: std.io.AnyReader,
+// reader into provided JPEG data (new std.Io API)
+r: *std.Io.Reader,
 bits: Bits,
 
 // bytes is a byte buffer that it is able to unread more than 1 byte,
@@ -152,7 +152,7 @@ quant: [max_tq + 1]idct.Block,
 // preallocated temp buffer to reuse while reading
 tmp: [2 * idct.block_size]u8 = [_]u8{0} ** (2 * idct.block_size),
 
-pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
+pub fn decode(al: std.mem.Allocator, r: *std.Io.Reader) !image.Image {
     var d = Decoder{
         .al = al,
         .r = r,
@@ -175,7 +175,7 @@ pub fn decode(al: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
     return try d.decodeInner(false);
 }
 
-pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
+pub fn decodeConfig(r: *std.Io.Reader) !image.Config {
     var d = Decoder{
         .al = undefined,
         .r = r,
@@ -184,6 +184,7 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
         .huff = undefined,
         .quant = undefined,
         .bits = undefined,
+        .progressive_coefficients = [_]?[]idct.Block{ null, null, null, null },
     };
     _ = d.decodeInner(true) catch |err| {
         if (err != error.ConfigOnly) {
@@ -210,7 +211,7 @@ pub fn decodeConfig(r: std.io.AnyReader) !image.Config {
             .width = d.width,
             .height = d.height,
             // TODO: Support CMYK
-            .color_model = .CMYK,
+            .color_model = .YCbCr,
         },
         else => error.InvalidSOIMarker,
     };
@@ -461,13 +462,13 @@ fn fill(self: *Decoder) !void {
         self.bytes.j = 0;
     }
 
-    // Fill the rest of the buffer.
-    const n = try self.r.readAll(self.bytes.buffer[self.bytes.j..]);
+    // Fill the rest of the buffer with a single non-blocking read.
+    const n = self.r.readSliceShort(self.bytes.buffer[self.bytes.j..]) catch |err| {
+        if (err == error.EndOfStream) return error.UnexpectedEof;
+        return err;
+    };
     self.bytes.j += n;
-
-    if (n == 0) {
-        return error.UnexpectedEof;
-    }
+    if (n == 0) return error.UnexpectedEof;
 }
 
 // unreadByteStuffedByte undoes the most recent readByteStuffedByte call,
@@ -1793,8 +1794,9 @@ fn decodeFile(path: []const u8) !image.Image {
     const jpeg_file = try std.fs.cwd().openFile(path, .{});
     defer jpeg_file.close();
 
-    var bufferedReader = std.io.bufferedReader(jpeg_file.reader());
-    const reader = bufferedReader.reader().any();
+    var io_buf: [4096]u8 = undefined;
+    var file_reader = jpeg_file.reader(&io_buf);
+    const reader: *std.Io.Reader = &file_reader.interface;
     return try decode(std.testing.allocator, reader);
 }
 
@@ -1833,9 +1835,9 @@ fn check(bounds: image.Rectangle, pix0: []u8, pix1: []u8, stride0: usize, stride
     }
 }
 
-fn readerFromSlice(data: []const u8) std.io.AnyReader {
-    var stream = std.io.fixedBufferStream(data);
-    return stream.reader().any();
+fn readerFromSlice(data: []const u8) *std.Io.Reader {
+    var reader_val = std.Io.Reader.fixed(data);
+    return &reader_val;
 }
 
 test "decode + progressive" {
@@ -1952,8 +1954,8 @@ test "truncated SOS doesn't panic" {
         j = b.len;
     }
     while (i < j) : (i += 1) {
-        var stream = std.io.fixedBufferStream(b[0..i]);
-        const reader = stream.reader().any();
+        var reader_val = std.Io.Reader.fixed(b[0..i]);
+        const reader: *std.Io.Reader = &reader_val;
 
         const result = decode(al, reader);
         try testing.expectError(error.UnexpectedEof, result);
@@ -2014,9 +2016,9 @@ test "large image with short data" {
         0x84, 0x96, 0xe3, 0x77, 0xf9, 0x2e, 0xe0, 0x0a, 0x62, 0x7f, 0xdf, 0xd9,
     };
 
-    // Wrap the input in a fixed buffer stream to simulate a reader.
-    var stream = std.io.fixedBufferStream(input);
-    const reader = stream.reader().any();
+    // Wrap the input in a fixed reader to simulate a reader.
+    var reader_val = std.Io.Reader.fixed(input);
+    const reader: *std.Io.Reader = &reader_val;
 
     // Attempt to decode the JPEG image.
     const decode_result = decode(al, reader);
@@ -2194,11 +2196,11 @@ test "padded rst marker" {
 
     // std.log.warn("\n\ndecoded_data.len: {d}\n\n", .{decoded_data.len});
 
-    var stream = std.io.fixedBufferStream(decoded);
-    const reader = stream.reader().any();
+    var reader_val2 = std.Io.Reader.fixed(decoded);
+    const reader2: *std.Io.Reader = &reader_val2;
 
     // Attempt to decode the JPEG image.
-    const img = try decode(testing.allocator, reader);
+    const img = try decode(testing.allocator, reader2);
     img.free(testing.allocator);
 }
 
@@ -2214,11 +2216,11 @@ test "Issue56724: Decode truncated JPEG should return UnexpectedEof" {
 
     // **2. Truncate the Data to First 24 Bytes**
     const truncated_data = file_data[0..24];
-    var stream = std.io.fixedBufferStream(truncated_data);
-    const reader = stream.reader().any();
+    var reader_val3 = std.Io.Reader.fixed(truncated_data);
+    const reader3: *std.Io.Reader = &reader_val3;
 
     // **3. Attempt to Decode the Truncated JPEG Data**
-    const decode_result = decode(allocator, reader);
+    const decode_result = decode(allocator, reader3);
 
     try testing.expectError(error.UnexpectedEof, decode_result);
 }
@@ -2256,12 +2258,12 @@ test "bad restart marker" {
         const want_pass = std.mem.eql(u8, tc[0..5], "PASS:");
         const infix = tc[5..];
 
-        var data = std.ArrayList(u8).init(allocator);
-        defer data.deinit();
+        var data = std.ArrayListUnmanaged(u8){};
+        defer data.deinit(allocator);
 
-        try data.appendSlice(prefix);
-        try data.appendSlice(infix);
-        try data.appendSlice(suffix);
+        try data.appendSlice(allocator, prefix);
+        try data.appendSlice(allocator, infix);
+        try data.appendSlice(allocator, suffix);
 
         const reader = readerFromSlice(data.items);
 

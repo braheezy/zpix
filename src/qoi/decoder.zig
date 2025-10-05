@@ -16,12 +16,12 @@ const QOI_HEADER_SIZE = 14;
 const QOI_PADDING_SIZE = 8;
 const QOI_PIXELS_MAX = 400_000_000;
 
-/// Decode a QOI image from an [AnyReader].
-pub fn decode(allocator: std.mem.Allocator, r: std.io.AnyReader) !image.Image {
-    var buf_list = std.ArrayList(u8).init(allocator);
-    defer buf_list.deinit();
+/// Decode a QOI image from a reader.
+pub fn decode(allocator: std.mem.Allocator, r: *std.Io.Reader) !image.Image {
+    var buf_list = std.ArrayListUnmanaged(u8){};
+    defer buf_list.deinit(allocator);
     const max_bytes = comptime @as(usize, QOI_HEADER_SIZE + QOI_PADDING_SIZE + QOI_PIXELS_MAX * 4);
-    try r.readAllArrayList(&buf_list, max_bytes);
+    try r.appendRemaining(allocator, &buf_list, @enumFromInt(max_bytes));
     return decodeFromBuffer(allocator, buf_list.items);
 }
 
